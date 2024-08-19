@@ -52,7 +52,6 @@ extern crate rest_tensors as tensors;
 extern crate chrono as time;
 #[macro_use]
 extern crate lazy_static;
-use std::os::raw;
 use std::{f64, fs::File, io::Write};
 use std::path::PathBuf;
 use pyo3::prelude::*;
@@ -95,126 +94,143 @@ use crate::post_scf_analysis::{post_scf_correlation, print_out_dfa, save_chkfile
 //pub use crate::initial_guess::sap::*;
 //use crate::{post_scf_analysis::{rand_wf_real_space, cube_build, molden_build}, isdf::error_isdf, molecule_io::Molecule};
 
-
-
-use num_traits::Float;
-const TOLERANCE: f64 = 1e-5;
-
-
-
 fn main() -> anyhow::Result<()> {
+    let mut time_mark = utilities::TimeRecords::new();
+    time_mark.new_item("Overall", "the whole job");
+    time_mark.count_start("Overall");
+
+    time_mark.new_item("SCF", "the scf procedure");
+    time_mark.count_start("SCF");
 
     let ctrl_file = utilities::parse_input().value_of("input_file").unwrap_or("ctrl.in").to_string();
     if ! PathBuf::from(ctrl_file.clone()).is_file() {
         panic!("Input file ({:}) does not exist", ctrl_file);
     }
+
+
     let mut mol = Molecule::build(ctrl_file)?;
-
     println!("Molecule_name: {}", &mol.geom.name);
-    println!("mol.geom.elem: {}",format!("{:?}", &mol.geom.elem));
-    
-    println!("mol.geom.position: {}",format!("{:?}", &mol.geom.position));
 
-    
-    let tol = TOLERANCE / f64::sqrt(1.0 + mol.geom.position.size[1] as f64);
-    println!("mol.geom.position.size[1] as f64: {}",mol.geom.position.size[1] as f64);
-    println!("tol: {}", tol);
+    let mut scf_data = scf_io::scf(mol).unwrap();
 
-    
-    let decimals = (-tol.log10()).floor() as i32;
-    println!("decimals: {}", decimals);
+    //let mut grad_data = Gradient::build(&scf_data.mol, &scf_data);
 
-    let mut atom: Vec<(&String, [f64;3])> = Vec::with_capacity(mol.geom.position.size[1]);
+    //grad_data.calc_j(&scf_data.density_matrix);
+    //print!("occ, {:?}", scf_data.occupation);
 
-    for i in 0..mol.geom.position.size[1] {
-        
-        atom.push((&mol.geom.elem[0], [mol.geom.position.data[i * 3 + 0], mol.geom.position.data[i * 3 + 1], mol.geom.position.data[i * 3 + 2]]));
+    time_mark.count("SCF");
+
+    if scf_data.mol.ctrl.restart {
+        println!("now save the converged SCF results");
+        save_chkfile(&scf_data)
+    };
+
+    if scf_data.mol.ctrl.check_stab {
+        time_mark.new_item("Stability", "the scf stability check");
+        time_mark.count_start("Stability");
+
+        scf_data.stability();
+
+        time_mark.count("Stability");
     }
-    for i in 0..atom.len() {
-        println!("Element: {}, Position: ({}, {}, {})", atom[i].0, atom[i].1[0], atom[i].1[1], atom[i].1[2]);
+
+    //====================================
+    // Now for post-xc calculations
+    //====================================
+    if scf_data.mol.ctrl.post_xc.len()>=1 {
+        print_out_dfa(&scf_data);
     }
-    let atomtypes = atom_types(&atom, None, None);
-    
-    let rawsys = SymmSys::new(&atom);
-    // print atomtypes
-    for (key, value) in &rawsys.atomtypes {
-        println!("Atom type: {}, Atom indices: {:?}", key, value);
+
+    //====================================
+    // Now for post-SCF analysis
+    //====================================
+    let mulliken = mulliken_pop(&scf_data);
+    println!("Mulliken population analysis:");
+    for (i, (pop, atom)) in mulliken.iter().zip(scf_data.mol.geom.elem.iter()).enumerate() {
+        println!("{:3}-{:3}: {:10.6}", i, atom, pop);
     }
+
+    post_scf_analysis::post_scf_output(&scf_data);
+
+    //let error_isdf = error_isdf(12..20, &scf_data);
+    //println!("k_mu:{:?}, abs_error: {:?}, rel_error: {:?}", error_isdf.0, error_isdf.1, error_isdf.2);
+
+    if let Some(dft_method) = &scf_data.mol.xc_data.dfa_family_pos {
+        match dft_method {
+            dft::DFAFamily::PT2 | dft::DFAFamily::SBGE2 => {
+                time_mark.new_item("PT2", "the PT2 evaluation");
+                time_mark.count_start("PT2");
+                ri_pt2::xdh_calculations(&mut scf_data);
+                time_mark.count("PT2");
+            },
+            dft::DFAFamily::RPA => {
+                time_mark.new_item("RPA", "the RPA evaluation");
+                time_mark.count_start("RPA");
+                ri_rpa::rpa_calculations(&mut scf_data);
+                time_mark.count("RPA");
+            }
+            dft::DFAFamily::SCSRPA => {
+                time_mark.new_item("SCS-RPA", "the SCS-RPA evaluation");
+                time_mark.count_start("SCS-RPA");
+                ri_pt2::xdh_calculations(&mut scf_data);
+                time_mark.count("SCS-RPA");
+            }
+            _ => {}
+        }
+    }
+    //====================================
+    // Now for post ai correction
+    //====================================
+    if let Some(scc) = post_ai_correction(&mut scf_data) {
+        scf_data.energies.insert("ai_correction".to_string(), scc);
+    }
+
+    //====================================
+    // Now for post-correlation calculations
+    //====================================
+    if scf_data.mol.ctrl.post_correlation.len()>=1 {
+        post_scf_correlation(&mut scf_data);
+    }
+
+    time_mark.count("Overall");
+
+    println!("");
+    println!("====================================================");
+    println!("              REST: Mission accomplished");
+    println!("====================================================");
+
+    output_result(&scf_data);
+
+
+    time_mark.report_all();
 
     Ok(())
 }
-use std::collections::HashMap;
 
-fn atom_types(atoms: &[(&String, [f64;3])], basis: Option<HashMap<String, isize>>, magmom: Option<Vec<isize>>) -> HashMap<String, Vec<usize>> {
-    let mut atmgroup = HashMap::new();
 
-    // Iterate over atoms
-    for (ia, a) in atoms.iter().enumerate() {
-        let symbol = if a.0.to_uppercase().contains("GHOST") {
-            format!("X{}", &a.0[5..])
+pub fn output_result(scf_data: &scf_io::SCF) {
+    println!("The SCF energy        : {:18.10} Ha", 
+        //scf_data.mol.ctrl.xc.to_uppercase(),
+        scf_data.scf_energy);
+    
+    let xc_name = scf_data.mol.ctrl.xc.to_lowercase();
+    if xc_name.eq("mp2") || xc_name.eq("xyg3") || xc_name.eq("xygjos") || xc_name.eq("r-xdh7") || xc_name.eq("xyg7") || xc_name.eq("zrps") || xc_name.eq("scsrpa") {
+        let total_energy = scf_data.energies.get("xdh_energy").unwrap()[0];
+        let post_ai_correction = scf_data.mol.ctrl.post_ai_correction.to_lowercase();
+        let ai_correction = if xc_name.eq("r-xdh7") && post_ai_correction.eq("scc23") {
+            let ai_correction = scf_data.energies.get("ai_correction").unwrap()[0];
+            println!("AI Correction         : {:18.10} Ha", ai_correction);
+            ai_correction
         } else {
-            a.0.clone()
+            0.0
         };
-
-        if let Some(basis_map) = &basis {
-            let stdsymb = std_symbol(&symbol);
-            if basis_map.contains_key(&symbol) || basis_map.contains_key(&stdsymb) {
-                let key = if basis_map.get(&symbol) == basis_map.get(&stdsymb) {
-                    stdsymb
-                } else {
-                    symbol
-                };
-                atmgroup.entry(key).or_insert_with(Vec::new).push(ia);
-            } else {
-                atmgroup.entry(stdsymb).or_insert_with(Vec::new).push(ia);
-            }
-        } else {
-            atmgroup.entry(symbol).or_insert_with(Vec::new).push(ia);
-        }
+        println!("The (R)-xDH energy    : {:18.10} Ha", total_energy+ ai_correction);
+    }
+    if xc_name.eq("rpa@pbe") {
+        let total_energy = scf_data.energies.get("rpa_energy").unwrap()[0];
+        println!("The RPA energy        : {:18.10} Ha", total_energy);
     }
 
-    if let Some(magmom_vec) = magmom {
-        let mut atmgroup_new = HashMap::new();
-        let suffix = vec![(-1, "d"), (0, "o"), (1, "u")].into_iter().collect::<HashMap<_, _>>();
-        for (elem, idx) in atmgroup.iter() {
-            let uniq_mag = magmom_vec.iter().filter(|&&m| idx.contains(&(magmom_vec.iter().position(|&x| x == m).unwrap()))).collect::<Vec<_>>();
-            if uniq_mag.len() > 1 {
-                for (i, &mag) in uniq_mag.iter().enumerate() {
-                    let subgrp: Vec<_> = idx.iter().filter(|&i| magmom_vec[*i] == *mag).map(|&i| i).collect();
-                    if !suffix.contains_key(&mag) {
-                        panic!("Magmom should be chosen from [-1, 0, 1], but {} is given", mag);
-                    }
-                    atmgroup_new.insert(format!("{}_{}", elem, suffix[&mag]), subgrp);
-                }
-            } else {
-                atmgroup_new.insert(elem.clone(), idx.clone());
-            }
-        }
-        atmgroup = atmgroup_new;
-    }
-
-    atmgroup
 }
 
-// Helper function to get standard symbol
-fn std_symbol(symbol: &str) -> String {
-    // Placeholder implementation
-    symbol.to_string()
-}
 
-struct SymmSys {
-    atomtypes: HashMap<String, Vec<usize>>,
-}
-
-impl SymmSys {
-    fn new(atoms: &[(&String, [f64;3])]) -> Self {
-        let mut symm_sys = SymmSys {
-            atomtypes: HashMap::new(),
-        };
-        symm_sys.init(atoms);
-        symm_sys
-    }
-    fn init(&mut self, atoms: &[(&String, [f64;3])]) {
-        self.atomtypes = atom_types(&atoms, None, None);
-    }
-}
