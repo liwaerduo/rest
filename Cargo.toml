@@ -41,6 +41,8 @@ ndarray = "0.15.6"
 # seems to pull in libssl and libcrypto which is rejected by manylinux
 reqwest = { version = "0.10", default-features = false, features = ["blocking", "json"] }
 
+approx = "0.5.1"
+
 [dependencies.pyo3]
 version = "0.18.1"
 features = ["extension-module"]
