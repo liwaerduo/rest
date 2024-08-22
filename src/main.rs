@@ -135,11 +135,15 @@ fn main() -> anyhow::Result<()> {
     }
     let atomtypes = atom_types(&atom, None, None);
     
-    let rawsys = SymmSys::new(&atom);
-    // print atomtypes
+    let mut rawsys = SymmSys::new(&atom);
+    
     for (key, value) in &rawsys.atomtypes {
         println!("Atom type: {}, Atom indices: {:?}", key, value);
     }
+    
+    let (w1, u1) = rawsys.cartesian_tensor(1);
+    println!("w1: {:?}, u1: {:?}", w1, u1);
+
 
     Ok(())
 }
@@ -201,7 +205,11 @@ fn std_symbol(symbol: &str) -> String {
     // Placeholder implementation
     symbol.to_string()
 }
-use ndarray::{Array, Array1, Array2, arr1, arr2, Axis, ViewRepr, s};
+use ndarray::{Array, Array1, Array2, arr1, arr2, Axis, ViewRepr, s, Zip};
+use nalgebra::{DMatrix, SymmetricEigen};
+use ndarray_linalg::{ UPLO};
+use ndarray_linalg::Eigh;
+
 struct SymmSys {
     atomtypes: HashMap<String, Vec<usize>>,
     charge_center: Array1<f64>,
@@ -340,6 +348,65 @@ impl SymmSys {
         
 
     }
+    
+
+    fn cartesian_tensor(&mut self, n: usize) -> (Array1<f64>, Array2<f64>) { 
+        let z:Vec<_> = self.atoms.iter().map(|row| row[0]).collect();
+        let r:Vec<_> = self.atoms.iter().map(|row| row[1..].to_vec()).collect();
+        let ncart = (n + 1) * (n + 2) / 2;
+        let natm = z.len();
+        println!("z: {:?}", z);
+        println!("r: {:?}", r);
+        println!("ncart: {}, natm: {}", ncart, natm);
+        let z_array = Array1::from(z);
+        let z_sum = z_array.sum();
+        let tensor = z_array.mapv(|x| (x / z_sum) as f64).view().to_owned().mapv(f64::sqrt);
+        println!("tensor: {:?}", tensor);
+        let tensor =tensor.into_shape((natm,1)).unwrap(); // into_shape((natm, -1)
+        
+      
+
+        
+        let r = Array2::from_shape_vec((r.len(), r[0].len()), r.into_iter().flatten().collect::<Vec<_>>()).unwrap();
+        let mut tensor_ = tensor.clone();
+        for i in 0..n {
+            
+
+            let mut result = Array::zeros((natm, tensor.shape()[1], r.shape()[1]));
+
+            // 遍历每一个样本进行操作
+            for z in 0..tensor.shape()[0] {
+                // tensor 是一个列向量（4x1），r 是一个4x3的矩阵。
+                // 计算外积，相当于 einsum('zi,zj->zij')
+                let outer_product = tensor[[z, 0]] * &r.row(z);
+                result.index_axis_mut(Axis(0), z).assign(&outer_product);
+            }
+        
+            // reshape 操作：将结果 reshape 成 (natm, -1)
+            let reshaped_result = result.into_shape((natm, tensor.shape()[1] * r.shape()[1])).unwrap();
+        
+            
+            let tensor = reshaped_result;
+            println!("tensors: {:?}", tensor);
+            tensor_ = tensor.clone();
+        }
+        let tensor = tensor_;
+        println!("tensors: {:?}", tensor);
+
+        fn eigh_dot(tensor: &Array2<f64>) -> (Array<f64, ndarray::Ix1>, Array2<f64>) {
+            let dot_product = tensor.t().dot(tensor);
+            let (eigvals, eigvecs) = dot_product.eigh(UPLO::Upper).unwrap(); 
+            (eigvals, eigvecs)
+        }
+        let (e, c) = eigh_dot(&tensor);
+
+
+        println!("e: \n{:?}", e);
+        println!("c: \n{:?}", c);
+        (e.slice(s![-(ncart as isize)..]).to_owned(), c.slice(s![.., -(ncart as isize)..]).to_owned())
+
+    }
+
 }
 
 fn _rm_digit(symb: &str) -> String {

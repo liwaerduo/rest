@@ -42,6 +42,8 @@ ndarray = "0.15.6"
 reqwest = { version = "0.10", default-features = false, features = ["blocking", "json"] }
 
 approx = "0.5.1"
+nalgebra = "0.22.0"
+ndarray-linalg = "0.14"
 
 [dependencies.pyo3]
 version = "0.18.1"
