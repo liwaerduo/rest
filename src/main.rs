@@ -143,9 +143,110 @@ fn main() -> anyhow::Result<()> {
     
     let (w1, u1) = rawsys.cartesian_tensor(1);
     println!("w1: {:?}, u1: {:?}", w1, u1);
+    let axes = u1.t().to_owned();
 
+    let charge_center = rawsys.charge_center.clone();
 
+    fn allclose(w1: &Array1<f64>, tol: f64) -> bool {
+        w1.iter().all(|&x| (x - 0.0).abs() <= tol)
+    }
+    println!("rawsys.has_icenter(){}",rawsys.has_icenter());
+    if allclose(&w1, tol) {
+        let gpname = "SO3".to_string();
+        // return (gpname, charge_center, Array2::eye(3));
+        println!("gpname: {:?}", gpname);
+        println!("charge_center: {:?}", charge_center);
+        let identity_matrix: Array2<f64> = Array2::eye(3);
+        println!("Identity matrix:\n{:?}", identity_matrix);
+    } else if allclose(&w1.slice(s![..2]).to_owned(), tol) { // 线性分子
+        let gpname = if rawsys.has_icenter() {
+         "Dooh"
+        } else {
+            "Coov"
+        };
+        // return gpname, charge_center, axes
+        println!("gpname: {:?}",gpname);
+        println!("charge_center: {:?}", charge_center);
+        println!("axes: {:?}", axes);
+    }
+    
+    let (gpname, orig, axes) = detect_symm(&atom, None);
+    println!("===============================result=======================================================");
+    println!("gpname: {:?}", gpname);
+    println!("orig: {:?}", orig);
+    println!("axes: {:?}",axes);
+    let atom = shift_atom(atom, &orig, &axes);
+    println!("atom: {:?}", atom);
+    //println!("{:?} {:?}",gpname,symm_identical_atoms(&gpname, atom));
     Ok(())
+}
+
+fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, isize>>) -> (String, Array1<f64>, Array2<f64>) {
+
+    let tol = TOLERANCE / f64::sqrt(1.0 + atoms.len() as f64);
+    println!("mol.geom.position.size[1] as f64: {}",atoms.len() as f64);
+    println!("tol: {}", tol);
+
+    
+    let decimals = (-tol.log10()).floor() as usize;
+    println!("decimals: {}", decimals);
+
+    let mut rawsys = SymmSys::new(&atoms);
+
+    let (w1, u1) = rawsys.cartesian_tensor(1);
+    println!("w1: {:?}, u1: {:?}", w1, u1);
+    let axes = u1.t().to_owned();
+
+    let charge_center = rawsys.charge_center.clone();
+
+    fn allclose(w1: &Array1<f64>, tol: f64) -> bool {
+        w1.iter().all(|&x| (x - 0.0).abs() <= tol)
+    }
+    println!("rawsys.has_icenter(){}",rawsys.has_icenter());
+    if allclose(&w1, tol) {
+        let gpname = "SO3".to_string();
+        // return (gpname, charge_center, Array2::eye(3));
+        println!("gpname: {:?}", gpname);
+        println!("charge_center: {:?}", charge_center);
+        let identity_matrix: Array2<f64> = Array2::eye(3);
+        println!("Identity matrix:\n{:?}", identity_matrix);
+        (gpname, charge_center, identity_matrix)
+    } else if allclose(&w1.slice(s![..2]).to_owned(), tol) { // 线性分子
+        let gpname = if rawsys.has_icenter() {
+         "Dooh"
+        } else {
+            "Coov"
+        };
+        // return gpname, charge_center, axes
+        println!("gpname: {:?}",gpname);
+        println!("charge_center: {:?}", charge_center);
+        println!("axes: {:?}", axes);
+        (gpname.to_string(), charge_center, axes)
+    } else {
+        let (w1_degeneracy, w1_degen_values) = degeneracy(&w1, decimals);
+        
+        ("Unknown".to_string(), charge_center, axes)
+    }
+
+}
+fn shift_atom(atoms: Vec<(&String, [f64; 3])>, orig: &Array1<f64>, axis: &Array2<f64>) -> Vec<(String, Array1<f64>)> {
+    
+    let mut coords: Array2<f64> = Array2::zeros((atoms.len(), orig.len()));
+    
+    for (i, atom) in atoms.iter().enumerate() {
+        
+        let atom_coords = Array1::from_vec(atom.1.to_vec());
+        coords.slice_mut(s![i, ..]).assign(&atom_coords);
+    }
+    
+    
+    let shifted_coords = (coords - orig).dot(&axis.t());
+
+    
+    atoms.into_iter()
+        .enumerate()
+        .map(|(i, (atom_type, _))| (atom_type.clone(), shifted_coords.slice(s![i, ..]).to_owned()))
+        .collect()
 }
 use std::collections::HashMap;
 
@@ -406,6 +507,54 @@ impl SymmSys {
         (e.slice(s![-(ncart as isize)..]).to_owned(), c.slice(s![.., -(ncart as isize)..]).to_owned())
 
     }
+    fn _vec_in_vecs(vec: &ArrayView1<f64>, vecs: &Array2<f64>) -> bool {
+        let norm = (vecs.nrows() as f64).sqrt();
+    
+        let diffs = vecs.axis_iter(Axis(0))
+            .map(|row| {
+          
+                let row = row.to_owned();
+                let diff = row - vec.to_owned();
+                diff.mapv(f64::abs).sum()
+            })
+            .collect::<Vec<f64>>();
+    
+        let min_diff = diffs.into_iter().fold(f64::INFINITY, f64::min) / norm;
+    
+        min_diff < TOLERANCE
+    }
+    
+    fn symmetric_for(&self, op: f64) -> bool{
+        for lst in self.group_atoms_by_distance.iter() {
+            println!("lst: {:?}", lst);
+        }
+        
+        
+
+        for lst in self.group_atoms_by_distance.iter() {
+            
+            
+            let indices: Vec<usize> = lst.clone();
+            let atoms_array: Array2<f64> = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap();
+            let atoms_slice = atoms_array.select(Axis(0), &indices);
+            let r0 = atoms_slice.slice(s![.., 1..]).to_owned();
+            
+            let r1 = r0.map(|x| x * op);
+
+            // Check if all vectors in `r1` are present in `r0`
+            let all_in_r0 = r1.axis_iter(Axis(0)).all(|x| Self::_vec_in_vecs(&x, &r0.to_owned()));
+
+            if !all_in_r0 {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn has_icenter(&self) -> bool {
+        self.symmetric_for(-1 as f64)
+    }
 
 }
 
@@ -571,6 +720,7 @@ lazy_static! {
     };
 }
 
+
 fn charge(symb_or_chg: impl Into<SymbolOrCharge>) -> i32 {
     match symb_or_chg.into() {
         SymbolOrCharge::Int(i) => i,
@@ -658,3 +808,125 @@ fn get_unique_and_indices(arr: &Array1<f64>) -> (Vec<f64>, Vec<usize>) {
 
     (unique_values, indices)
 }
+fn degeneracy(e: &Array1<f64>, decimals: usize) -> (Array1<usize>, Vec<f64>) {
+    // Round the values to the specified number of decimal places
+    let rounded_e = e.mapv(|x| (x * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32));
+
+    // Find unique values and their indices
+    
+    let (unique_values, inverse_indices) = get_unique_and_indices(&rounded_e);
+
+    // Compute the degeneracies
+    let mut degeneracies = Vec::with_capacity(unique_values.len());
+    for i in 0..unique_values.len() {
+        let count = inverse_indices.iter().filter(|&&x| x == i).count();
+        degeneracies.push(count);
+    }
+
+    (Array1::from(degeneracies), unique_values)
+}
+// lazy_static! {
+//     static ref OPERATOR_TABLE: HashMap<&'static str, Vec<&'static str>> = {
+//         let mut m = HashMap::new();
+//         m.insert("D2h", vec!["E", "C2x", "C2y", "C2z", "i", "sx", "sy", "sz"]);
+//         m.insert("C2h", vec!["E", "C2z", "i", "sz"]);
+//         m.insert("C2v", vec!["E", "C2z", "sx", "sy"]);
+//         m.insert("D2", vec!["E", "C2x", "C2y", "C2z"]);
+//         m.insert("Cs", vec!["E", "sz"]);
+//         m.insert("Ci", vec!["E", "i"]);
+//         m.insert("C2", vec!["E", "C2z"]);
+//         m.insert("C1", vec!["E"]);
+//         m
+//     };
+// }
+// use std::collections::HashSet;
+// #[derive(Debug)]
+// struct PointGroupSymmetryError(String);
+
+// fn argsort_coords(coords: &Array2<f64>) -> Vec<usize> {
+//     let mut indices: Vec<usize> = (0..coords.len_of(Axis(0))).collect();
+//     indices.sort_by(|&i, &j| {
+//         let a = coords.slice(s![i, ..]);
+//         let b = coords.slice(s![j, ..]);
+//         a.iter().partial_cmp(b.iter()).unwrap_or(Ordering::Equal)
+//     });
+//     indices
+// }
+
+// fn symm_ops(gpname: &str) -> HashMap<String, Array2<f64>> {
+//     let mut opdic = HashMap::new();
+//     opdic.insert("sz".to_string(), Array2::eye(3)); // Placeholder
+//     opdic
+// }
+
+// fn symm_identical_atoms(gpname: &str, atoms: Vec<(String, Array1<f64>)>) -> Result<Vec<Vec<usize>>, PointGroupSymmetryError> {
+//     if gpname == "Dooh" {
+//         let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
+//         let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
+
+//         let idx0 = argsort_coords(&coords_array);
+//         let coords0 = coords_array.select(Axis(0), &idx0);
+
+//         let opdic = symm_ops(gpname);
+//         let newc = coords_array.dot(&opdic["sz"]);
+//         let idx1 = argsort_coords(&newc);
+
+//         let mut dup_atom_ids: Vec<Vec<usize>> = vec![idx0.clone(), idx1.clone()];
+//         dup_atom_ids.sort_by(|a, b| a[0].cmp(&b[0]));
+//         let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
+
+//         let eql_atom_ids = uniq_idx.into_iter()
+//             .map(|i| {
+//                 let mut s: Vec<usize> = vec![i];
+//                 s.sort();
+//                 s
+//             })
+//             .collect::<Vec<_>>();
+
+//         return Ok(eql_atom_ids);
+//     } else if gpname == "Coov" {
+//         let eql_atom_ids = (0..atoms.len()).map(|i| vec![i]).collect::<Vec<Vec<usize>>>();
+//         return Ok(eql_atom_ids);
+//     }
+
+//     // Fallback for other point groups
+//     let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
+//     let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
+    
+//     let opdic = symm_ops(gpname);
+//     let ops = OPERATOR_TABLE[gpname]
+//         .iter()
+//         .map(|op| opdic[&op.to_string()].clone())
+//         .collect::<Vec<_>>();
+
+//     let mut dup_atom_ids = vec![];
+
+//     let idx = argsort_coords(&coords_array);
+//     let coords0 = coords_array.select(Axis(0), &idx);
+
+//     for op in ops {
+//         let newc = coords_array.dot(&op);
+//         let idx = argsort_coords(&newc);
+
+//         if !coords0.iter().zip(newc.select(Axis(0), &idx).iter()).all(|(a, b)| (*a - *b).abs() < TOLERANCE) {
+//             return Err(PointGroupSymmetryError("Symmetry identical atoms not found".to_string()));
+//         }
+
+//         dup_atom_ids.push(idx);
+//     }
+
+//     dup_atom_ids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+//     let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
+    
+//     let eql_atom_ids = uniq_idx.into_iter()
+//         .map(|i| {
+//             let mut s: HashSet<usize> = HashSet::new();
+//             s.insert(i);
+//             let mut sorted_vec = s.into_iter().collect::<Vec<_>>();
+//             sorted_vec.sort();
+//             sorted_vec
+//         })
+//         .collect::<Vec<_>>();
+
+//     Ok(eql_atom_ids)
+// }
