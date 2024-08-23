@@ -224,7 +224,51 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
         (gpname.to_string(), charge_center, axes)
     } else {
         let (w1_degeneracy, w1_degen_values) = degeneracy(&w1, decimals);
-        
+        println!("w1_degeneracy: {:?}",w1_degeneracy);
+        println!("w1_degen_values: {:?}",w1_degen_values);
+        let (w2, u2) = rawsys.cartesian_tensor(2); // 
+        println!("w2: {:?}", w2);
+        println!("u2: {:?}", u2);
+        let (w2_degeneracy, w2_degen_values) = degeneracy(&w2, decimals);
+        println!("w2_degeneracy: {:?}",w2_degeneracy);
+        println!("w2_degen_values: {:?}",w2_degen_values);
+        fn contains(array: &Array1<usize>, value: usize) -> bool {
+            array.iter().any(|&x| x == value)
+        }
+        // if contains(&w1_degeneracy, 3) {
+        //     // T, O, I 组
+        //     let (w3, u3) = rawsys.cartesian_tensor(3);
+        //     let (w3_degeneracy, w3_degen_values) = degeneracy(&w3, decimals);
+    
+        //     if contains(&w2_degeneracy, 5) && contains(&w3_degeneracy, 4) && w3_degeneracy.len() == 3 {
+        //         if let Some((gpname, new_axes)) = search_i_group() {
+        //             println!("Group: {}, New Axes: {:?}", gpname, new_axes);
+        //             return;
+        //         }
+        //     } else if contains(&w2_degeneracy, 3) && w2_degeneracy.len() <= 3 {
+        //         if let Some((gpname, new_axes)) = search_ot_group() {
+        //             println!("Group: {}, New Axes: {:?}", gpname, new_axes);
+        //             return;
+        //         }
+        //     }
+        // } else if contains(&w1_degeneracy, 2) && w2_degeneracy.iter().any(|&x| x >= 2) {
+        //     if (w1[[1, 0]] - w1[[2, 0]]).abs() < tol {
+        //         let axes = [1, 2, 0];
+        //         let n = search_c_highest(axes[2]);
+    
+        //         let (n, c2x, mirrorx) = if n == 1 {
+        //             (None, None, None)
+        //         } else {
+        //             (Some(search_c2x(axes[2], n)), Some(search_mirrorx(axes[2], n)), None)
+        //         };
+        //         println!("n: {:?}, c2x: {:?}, mirrorx: {:?}", n, c2x, mirrorx);
+        //     }
+        // } else {
+        //     let n = -1; // 标记为 D2h 和子组
+        //     println!("n: {}", n);
+        // }
+
+
         ("Unknown".to_string(), charge_center, axes)
     }
 
@@ -471,35 +515,34 @@ impl SymmSys {
         let r = Array2::from_shape_vec((r.len(), r[0].len()), r.into_iter().flatten().collect::<Vec<_>>()).unwrap();
         let mut tensor_ = tensor.clone();
         for i in 0..n {
-            
 
-            let mut result = Array::zeros((natm, tensor.shape()[1], r.shape()[1]));
-
-            // 遍历每一个样本进行操作
-            for z in 0..tensor.shape()[0] {
-                // tensor 是一个列向量（4x1），r 是一个4x3的矩阵。
-                // 计算外积，相当于 einsum('zi,zj->zij')
-                let outer_product = tensor[[z, 0]] * &r.row(z);
+            let mut result = Array::zeros((natm, tensor_.shape()[1], r.shape()[1]));
+     
+            for z in 0..tensor_.shape()[0] {
+                
+                let outer_product = tensor_[[z, 0]] * &r.row(z);
                 result.index_axis_mut(Axis(0), z).assign(&outer_product);
             }
         
-            // reshape 操作：将结果 reshape 成 (natm, -1)
-            let reshaped_result = result.into_shape((natm, tensor.shape()[1] * r.shape()[1])).unwrap();
+            let reshaped_result = result.into_shape((natm, tensor_.shape()[1] * r.shape()[1])).unwrap();
         
             
-            let tensor = reshaped_result;
-            println!("tensors: {:?}", tensor);
-            tensor_ = tensor.clone();
+            tensor_ = reshaped_result;
+            println!("tensor: {:?}", tensor_);
+            // tensor_ = tensor.clone();
         }
         let tensor = tensor_;
-        println!("tensors: {:?}", tensor);
+        println!("tensor: {:?}", tensor);
 
-        fn eigh_dot(tensor: &Array2<f64>) -> (Array<f64, ndarray::Ix1>, Array2<f64>) {
-            let dot_product = tensor.t().dot(tensor);
+        fn eigh_dot(tensor: Array2<f64>) -> (Array<f64, ndarray::Ix1>, Array2<f64>) {
+            let tensor_t = tensor.t();
+            println!("tensor_t: {:?}", tensor_t);
+            let dot_product = tensor_t.dot(&tensor); //  ?
+            println!("tensor.t().dot(&tensor){:?}",dot_product);
             let (eigvals, eigvecs) = dot_product.eigh(UPLO::Upper).unwrap(); 
             (eigvals, eigvecs)
         }
-        let (e, c) = eigh_dot(&tensor);
+        let (e, c) = eigh_dot(tensor);
 
 
         println!("e: \n{:?}", e);
@@ -825,6 +868,50 @@ fn degeneracy(e: &Array1<f64>, decimals: usize) -> (Array1<usize>, Vec<f64>) {
 
     (Array1::from(degeneracies), unique_values)
 }
+
+// fn search_i_group(rawsys: &SymmSys) -> (Option<String>, Option<Vec<Array1<f64>>>) {
+//     let possible_cn = rawsys.search_possible_rotations();
+//     let c5_axes: Vec<Array1<f64>> = possible_cn
+//         .iter()
+//         .filter_map(|(axis, n)| {
+//             if *n == 5 && rawsys.has_rotation(axis, 5) {
+//                 Some(axis.clone())
+//             } else {
+//                 None
+//             }
+//         })
+//         .collect();
+
+//     if c5_axes.len() <= 1 {
+//         return (None, None);
+//     }
+
+//     let zaxis = c5_axes[0].clone();
+//     let cos: Vec<f64> = c5_axes.iter()
+//         .skip(1)
+//         .map(|axis| {
+//             axis.dot(&zaxis)
+//         })
+//         .collect();
+
+//     if !cos.iter().all(|&c| {
+//         (c.abs() - 1.0 / (5.0 as f64).sqrt()).abs() < TOLERANCE
+//     }) {
+//         return (None, None);
+//     }
+
+//     let gpname = if rawsys.has_icenter() { "Ih" } else { "I" };
+
+//     let mut c5 = c5_axes[1].clone();
+//     if c5.dot(&zaxis) < 0.0 {
+//         c5 *= -1.0;
+//     }
+
+//     let c5a = rotation_mat(zaxis.clone(), 6.0 * PI / 5.0).dot(&c5);
+//     let xaxis = &c5a + &c5;
+
+//     (Some(gpname.to_string()), Some(vec![zaxis, xaxis]))
+// }
 // lazy_static! {
 //     static ref OPERATOR_TABLE: HashMap<&'static str, Vec<&'static str>> = {
 //         let mut m = HashMap::new();
