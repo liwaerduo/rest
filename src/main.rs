@@ -115,15 +115,6 @@ fn main() -> anyhow::Result<()> {
     
     println!("mol.geom.position: {}",format!("{:?}", &mol.geom.position));
 
-    
-    let tol = TOLERANCE / f64::sqrt(1.0 + mol.geom.position.size[1] as f64);
-    println!("mol.geom.position.size[1] as f64: {}",mol.geom.position.size[1] as f64);
-    println!("tol: {}", tol);
-
-    
-    let decimals = (-tol.log10()).floor() as i32;
-    println!("decimals: {}", decimals);
-
     let mut atom: Vec<(&String, [f64;3])> = Vec::with_capacity(mol.geom.position.size[1]);
 
     for i in 0..mol.geom.position.size[1] {
@@ -133,42 +124,7 @@ fn main() -> anyhow::Result<()> {
     for i in 0..atom.len() {
         println!("Element: {}, Position: ({}, {}, {})", atom[i].0, atom[i].1[0], atom[i].1[1], atom[i].1[2]);
     }
-    let atomtypes = atom_types(&atom, None, None);
     
-    let mut rawsys = SymmSys::new(&atom);
-    
-    for (key, value) in &rawsys.atomtypes {
-        println!("Atom type: {}, Atom indices: {:?}", key, value);
-    }
-    
-    let (w1, u1) = rawsys.cartesian_tensor(1);
-    println!("w1: {:?}, u1: {:?}", w1, u1);
-    let axes = u1.t().to_owned();
-
-    let charge_center = rawsys.charge_center.clone();
-
-    fn allclose(w1: &Array1<f64>, tol: f64) -> bool {
-        w1.iter().all(|&x| (x - 0.0).abs() <= tol)
-    }
-    println!("rawsys.has_icenter(){}",rawsys.has_icenter());
-    if allclose(&w1, tol) {
-        let gpname = "SO3".to_string();
-        // return (gpname, charge_center, Array2::eye(3));
-        println!("gpname: {:?}", gpname);
-        println!("charge_center: {:?}", charge_center);
-        let identity_matrix: Array2<f64> = Array2::eye(3);
-        println!("Identity matrix:\n{:?}", identity_matrix);
-    } else if allclose(&w1.slice(s![..2]).to_owned(), tol) { // 线性分子
-        let gpname = if rawsys.has_icenter() {
-         "Dooh"
-        } else {
-            "Coov"
-        };
-        // return gpname, charge_center, axes
-        println!("gpname: {:?}",gpname);
-        println!("charge_center: {:?}", charge_center);
-        println!("axes: {:?}", axes);
-    }
     
     let (gpname, orig, axes) = detect_symm(&atom, None);
     println!("===============================result=======================================================");
@@ -184,7 +140,7 @@ fn main() -> anyhow::Result<()> {
 fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, isize>>) -> (String, Array1<f64>, Array2<f64>) {
 
     let tol = TOLERANCE / f64::sqrt(1.0 + atoms.len() as f64);
-    println!("mol.geom.position.size[1] as f64: {}",atoms.len() as f64);
+    println!("atoms.len(): {}",atoms.len() as f64);
     println!("tol: {}", tol);
 
     
@@ -518,14 +474,21 @@ impl SymmSys {
 
             let mut result = Array::zeros((natm, tensor_.shape()[1], r.shape()[1]));
      
-            for z in 0..tensor_.shape()[0] {
+            // for z in 0..tensor_.shape()[0] {
                 
-                let outer_product = tensor_[[z, 0]] * &r.row(z);
-                result.index_axis_mut(Axis(0), z).assign(&outer_product);
+            //     let outer_product = tensor_[[z, 0]] * &r.row(z);
+            //     result.index_axis_mut(Axis(0), z).assign(&outer_product);
+            // }
+            for z in 0..tensor_.shape()[0] {
+                for i in 0..tensor_.shape()[1] {
+                    let outer_product = tensor_[[z, i]] * &r.row(z);
+                    result.slice_mut(s![z, i, ..]).assign(&outer_product);
+                }
             }
-        
+            println!("result_before_reshape: {:?}", result);
             let reshaped_result = result.into_shape((natm, tensor_.shape()[1] * r.shape()[1])).unwrap();
-        
+            println!("{}",tensor_.shape()[1]);
+            println!("{}",r.shape()[1]);
             
             tensor_ = reshaped_result;
             println!("tensor: {:?}", tensor_);
@@ -830,27 +793,26 @@ fn epsilon() -> f64 {
 }
 
 fn get_unique_and_indices(arr: &Array1<f64>) -> (Vec<f64>, Vec<usize>) {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashMap::new();  
     let mut unique_values = Vec::new();
-    let mut indices = Vec::new();
+    let mut indices = Vec::with_capacity(arr.len());
 
-    for (i, &value) in arr.iter().enumerate() {
-        if !seen.contains(&FloatWrapper(value)) {
-            seen.insert(FloatWrapper(value));
-            unique_values.push(value);
-            indices.push(i);
+    for &value in arr.iter() {
+        if let Some(&index) = seen.get(&FloatWrapper(value)) {
+            
+            indices.push(index);
         } else {
             
-            if let Some(&last_index) = indices.last() {
-                indices.push(last_index);
-            } else {
-                indices.push(0);  
-            }
+            let new_index = unique_values.len();
+            seen.insert(FloatWrapper(value), new_index);
+            unique_values.push(value);
+            indices.push(new_index);
         }
     }
 
     (unique_values, indices)
 }
+
 fn degeneracy(e: &Array1<f64>, decimals: usize) -> (Array1<usize>, Vec<f64>) {
     // Round the values to the specified number of decimal places
     let rounded_e = e.mapv(|x| (x * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32));
