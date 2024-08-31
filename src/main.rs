@@ -151,7 +151,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
 
     let (w1, u1) = rawsys.cartesian_tensor(1);
     println!("w1: {:?}, u1: {:?}", w1, u1);
-    let axes = u1.t().to_owned();
+    let mut axes = u1.t().to_owned();
 
     let charge_center = rawsys.charge_center.clone();
 
@@ -188,42 +188,151 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
         let (w2_degeneracy, w2_degen_values) = degeneracy(&w2, decimals);
         println!("w2_degeneracy: {:?}",w2_degeneracy);
         println!("w2_degen_values: {:?}",w2_degen_values);
+        
+        let n: Option<i32> = None;
+        let c2x:Option<Array1<f64>> = None;
+        let mirrorx:Option<Array1<f64>> = None;
         fn contains(array: &Array1<usize>, value: usize) -> bool {
             array.iter().any(|&x| x == value)
         }
-        // if contains(&w1_degeneracy, 3) {
-        //     // T, O, I 组
-        //     let (w3, u3) = rawsys.cartesian_tensor(3);
-        //     let (w3_degeneracy, w3_degen_values) = degeneracy(&w3, decimals);
+        fn convert_to_matrix(new_axes: Option<Vec<Array1<f64>>>) -> Option<Array2<f64>> {
+            if let Some(axes) = new_axes {
+                if axes.is_empty() {
+                    return None;
+                }
+                let n = axes.len();
+                let m = axes[0].len();
+                let mut matrix = Array2::zeros((n, m));
+                for (i, vec) in axes.into_iter().enumerate() {
+                    matrix.row_mut(i).assign(&vec);
+                }
+                Some(matrix)
+            } else {
+                None
+            }
+        }
+        if contains(&w1_degeneracy, 3) {
+            // T, O, I
+            let (w3, u3) = rawsys.cartesian_tensor(3);
+            let (w3_degeneracy, w3_degen_values) = degeneracy(&w3, decimals);
     
-        //     if contains(&w2_degeneracy, 5) && contains(&w3_degeneracy, 4) && w3_degeneracy.len() == 3 {
-        //         if let Some((gpname, new_axes)) = search_i_group() {
-        //             println!("Group: {}, New Axes: {:?}", gpname, new_axes);
-        //             return;
-        //         }
-        //     } else if contains(&w2_degeneracy, 3) && w2_degeneracy.len() <= 3 {
-        //         if let Some((gpname, new_axes)) = search_ot_group() {
-        //             println!("Group: {}, New Axes: {:?}", gpname, new_axes);
-        //             return;
-        //         }
-        //     }
-        // } else if contains(&w1_degeneracy, 2) && w2_degeneracy.iter().any(|&x| x >= 2) {
-        //     if (w1[[1, 0]] - w1[[2, 0]]).abs() < tol {
-        //         let axes = [1, 2, 0];
-        //         let n = search_c_highest(axes[2]);
-    
-        //         let (n, c2x, mirrorx) = if n == 1 {
-        //             (None, None, None)
-        //         } else {
-        //             (Some(search_c2x(axes[2], n)), Some(search_mirrorx(axes[2], n)), None)
-        //         };
-        //         println!("n: {:?}, c2x: {:?}, mirrorx: {:?}", n, c2x, mirrorx);
-        //     }
-        // } else {
-        //     let n = -1; // 标记为 D2h 和子组
-        //     println!("n: {}", n);
-        // }
+            if contains(&w2_degeneracy, 5) && contains(&w3_degeneracy, 4) && w3_degeneracy.len() == 3 {
+                if let (gpname, new_axes) = search_i_group(&mut rawsys) {
+                    println!("Group: {:?}, New Axes: {:?}", gpname, new_axes);
+                    return (gpname.unwrap(), charge_center, _refine(convert_to_matrix(new_axes).unwrap()));
+                }
+            } else if contains(&w2_degeneracy, 3) && w2_degeneracy.len() <= 3 {
+                if let (gpname, new_axes) = search_ot_group(&mut rawsys) {
+                    println!("Group: {}, New Axes: {:?}", gpname.clone().unwrap(), new_axes);
+                    return (gpname.unwrap(), charge_center, _refine(convert_to_matrix(new_axes).unwrap()));
+                }
+            }
+        } else if contains(&w1_degeneracy, 2) && w2_degeneracy.iter().any(|&x| x >= 2) {
+            
 
+            let view1 = w1.index_axis(Axis(0), 1).to_owned();
+            let view2 = w1.index_axis(Axis(0), 2).to_owned();
+
+            let diff = view1 - view2;
+            let abs_diff = diff.mapv(f64::abs);
+            let sum_diff = abs_diff.sum();
+
+            if sum_diff < tol {
+                
+                let new_order = [1, 2, 0];
+                let (rows, cols) = axes.dim();
+                let new_shape = (rows, cols);
+
+                let mut reordered_axes = Array::zeros(new_shape);
+
+                for (i, &val) in axes.iter().enumerate() {
+                    let old_index = i % axes.shape()[0];
+                    let new_index = new_order[old_index];
+                    let new_position = (i / axes.shape()[0], new_index);
+                    reordered_axes[new_position] = val;
+                }
+            }       
+
+            let axis_view = axes.index_axis(Axis(1), 2);
+
+            let axis_owned = axis_view.to_owned();
+
+            let axis_option = Some(&axis_owned);
+
+            let (c_highest, n) = rawsys.search_c_highest(axis_option);
+            let n = if n == 1 { None } else {
+                let c2x = rawsys.search_c2x(&axis_option.unwrap(), n);
+                let mirrorx = rawsys.search_mirrorx(axis_option, n);
+                Some((c2x, mirrorx))
+            };
+        } else {
+            let n = -1; 
+            
+        }
+        if let None = n {
+            let (zaxis, n) = rawsys.search_c_highest(None);
+            if n > 1 {
+                if let Some(c2x) = rawsys.search_c2x(&zaxis, n) {
+                    axes = _make_axes(&zaxis.view(), &c2x.view());
+                } else if let Some(mirrorx) = rawsys.search_mirrorx(Some(&zaxis), n) {
+                    axes = _make_axes(&zaxis.view(), &mirrorx.view());
+                } else {
+
+                    let identity_axes = vec![
+                        array![1.0, 0.0, 0.0],
+                        array![0.0, 1.0, 0.0],
+                        array![0.0, 0.0, 1.0],
+                    ];
+                    for axis in identity_axes {
+                        if !parallel_vectors(&axis.view(), &zaxis.view(), TOLERANCE) {
+                            axes = _make_axes(&zaxis.view(), &axis.view());
+                            break;
+                        }
+                    }
+                }
+            } else {
+
+                if let Some(mirror) = rawsys.search_mirrorx(None, 1) {
+                    let xaxis = array![1.0, 0.0, 0.0];
+                    axes = _make_axes(&mirror.view(), &xaxis.view());
+                } else {
+                    axes = Array2::eye(3);
+                }
+            }
+        }
+        let n = n.unwrap();
+        if n >= 2 {
+            let gpname = "None";
+            let axis_view = axes.index_axis(Axis(1), 2);
+
+            let axis_owned = axis_view.to_owned();
+
+            let axis_option = Some(&axis_owned);
+            if let Some(c2x) = c2x {
+                if rawsys.has_mirror(&axis_option.unwrap()) {
+                    let gpname = format!("D{}h", n);
+                } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n as usize) {
+                    let gpname = format!("D{}d", n);
+                } else {
+                    let gpname = format!("D{}", n);
+                }
+                let axes = _make_axes(&axis_option.unwrap().view(), &c2x.view());
+            } else if let Some(mirrorx) = mirrorx {
+                let gpname = format!("C{}v", n);
+                let axes = _make_axes(&axis_option.unwrap().view(), &mirrorx.view());
+            } else if rawsys.has_mirror(&axis_option.unwrap().clone()) {
+                let gpname = format!("C{}h", n);
+            } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n as usize) {
+                let gpname = format!("S{}", n * 2);
+            } else {
+                let gpname = format!("C{}", n);
+            }
+            return (gpname.to_string(), charge_center, axes);
+        }
+        
+
+        
+    
 
         ("Unknown".to_string(), charge_center, axes)
     }
@@ -310,7 +419,7 @@ use ndarray::{Array, Array1, Array2, arr1, arr2, Axis, ViewRepr, s, Zip};
 use nalgebra::{DMatrix, SymmetricEigen};
 use ndarray_linalg::{ UPLO};
 use ndarray_linalg::Eigh;
-
+use ndarray::stack;
 struct SymmSys {
     atomtypes: HashMap<String, Vec<usize>>,
     charge_center: Array1<f64>,
@@ -474,11 +583,6 @@ impl SymmSys {
 
             let mut result = Array::zeros((natm, tensor_.shape()[1], r.shape()[1]));
      
-            // for z in 0..tensor_.shape()[0] {
-                
-            //     let outer_product = tensor_[[z, 0]] * &r.row(z);
-            //     result.index_axis_mut(Axis(0), z).assign(&outer_product);
-            // }
             for z in 0..tensor_.shape()[0] {
                 for i in 0..tensor_.shape()[1] {
                     let outer_product = tensor_[[z, i]] * &r.row(z);
@@ -492,7 +596,6 @@ impl SymmSys {
             
             tensor_ = reshaped_result;
             println!("tensor: {:?}", tensor_);
-            // tensor_ = tensor.clone();
         }
         let tensor = tensor_;
         println!("tensor: {:?}", tensor);
@@ -500,7 +603,7 @@ impl SymmSys {
         fn eigh_dot(tensor: Array2<f64>) -> (Array<f64, ndarray::Ix1>, Array2<f64>) {
             let tensor_t = tensor.t();
             println!("tensor_t: {:?}", tensor_t);
-            let dot_product = tensor_t.dot(&tensor); //  ?
+            let dot_product = tensor_t.dot(&tensor);
             println!("tensor.t().dot(&tensor){:?}",dot_product);
             let (eigvals, eigvecs) = dot_product.eigh(UPLO::Upper).unwrap(); 
             (eigvals, eigvecs)
@@ -530,25 +633,25 @@ impl SymmSys {
         min_diff < TOLERANCE
     }
     
-    fn symmetric_for(&self, op: f64) -> bool{
+    
+    fn symmetric_for(&self, op: SymmetryOp) -> bool {
         for lst in self.group_atoms_by_distance.iter() {
-            println!("lst: {:?}", lst);
-        }
-        
-        
-
-        for lst in self.group_atoms_by_distance.iter() {
-            
-            
             let indices: Vec<usize> = lst.clone();
-            let atoms_array: Array2<f64> = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap();
+            let atoms_array = Array2::from_shape_vec(
+                (self.atoms.len(), self.atoms[0].len()),
+                self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()
+            ).unwrap();
+
             let atoms_slice = atoms_array.select(Axis(0), &indices);
             let r0 = atoms_slice.slice(s![.., 1..]).to_owned();
-            
-            let r1 = r0.map(|x| x * op);
 
-            // Check if all vectors in `r1` are present in `r0`
-            let all_in_r0 = r1.axis_iter(Axis(0)).all(|x| Self::_vec_in_vecs(&x, &r0.to_owned()));
+            
+            let r1 = match op {
+                SymmetryOp::Scalar(s) => r0.map(|x| x * s), 
+                SymmetryOp::Matrix(ref m) => r0.dot(m),
+            };
+
+            let all_in_r0 = r1.axis_iter(Axis(0)).all(|x| Self::_vec_in_vecs(&x, &r0));
 
             if !all_in_r0 {
                 return false;
@@ -559,9 +662,307 @@ impl SymmSys {
     }
 
     fn has_icenter(&self) -> bool {
-        self.symmetric_for(-1 as f64)
+        self.symmetric_for(SymmetryOp::Scalar(-1.0))
     }
 
+    
+
+    fn search_possible_rotations(&mut self, zaxis: Option<&Array1<f64>>) -> Vec<(Array1<f64>, i32)> {
+
+        fn norm(arr: &Array2<f64>, axis: Axis) -> Array1<f64> {
+            arr.map_axis(axis, |row| row.dot(&row).sqrt())
+        }
+
+        fn normalize(arr: &Array2<f64>) -> Array2<f64> {
+            let norms = norm(arr, Axis(1));
+            arr / &norms.insert_axis(Axis(1))
+        }
+
+        let mut maybe_cn: Vec<(Array1<f64>, i32)> = Vec::new();
+
+        for lst in self.group_atoms_by_distance.clone() {
+            let natm = lst.len();
+            if natm > 1 {
+                let coords = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap().select(Axis(0), &lst.iter().map(|&x| x).collect::<Vec<_>>());
+
+                
+                for i in 1..natm {
+                    let row0 = coords.row(0).to_owned();
+                    let rowi = coords.row(i).to_owned();
+                    
+                    if (&row0 + &rowi).sum().abs() > TOLERANCE {
+                        maybe_cn.push(((row0 + rowi), 2));
+                    } else {
+                        maybe_cn.push(((row0 - rowi), 2));
+                    }
+                }
+                
+                let r0 = &coords - &coords.row(0);
+                let distance = norm(&r0, Axis(1));
+                let distance_reshaped = distance.view().insert_axis(Axis(1)); 
+                let eq_distance = &distance_reshaped - &distance.view().broadcast((distance.len(), distance.len())).unwrap();
+                let eq_distance = eq_distance.mapv(|x| x.abs() < TOLERANCE);
+                
+                
+
+                for i in 2..natm {
+                    for j in (0..i).filter(|&j| eq_distance[(i, j)]) {
+                        let cos = r0.row(i).dot(&r0.row(j)) / (distance[i] * distance[j]);
+                        let ang = cos.acos();
+                        let nfrac = 2.0 * std::f64::consts::PI / (std::f64::consts::PI - ang);
+                        let n = (nfrac.round() as i32);
+                        if (nfrac - n as f64).abs() < TOLERANCE {
+                            let cross_prod = cross(&r0.row(i), &r0.row(j));
+                            maybe_cn.push((cross_prod.to_owned(), n));
+                        }
+                    }
+                }
+            }
+        }
+
+
+        
+        let vecs: Vec<Array1<f64>> = maybe_cn.iter().map(|x| x.0.clone()).collect();
+        let vecs_stacked: Array2<f64> = stack(Axis(0), &vecs.iter().map(|x| x.view()).collect::<Vec<_>>()).unwrap();
+        let vecs = vecs_stacked;
+
+        let ns: Array1<i32> = maybe_cn.iter().map(|x| x.1).collect::<Vec<_>>().into();
+        let idx = norm(&vecs, Axis(1)).mapv(|x| x > TOLERANCE);
+
+        // Convert `Vec<usize>` to `Array1<usize>`
+        let indices: Array1<usize> = Array1::from_vec(
+            idx.indexed_iter()
+                .filter_map(|(i, &x)| if x { Some(i) } else { None })
+                .collect()
+        );
+
+        // Convert Array1<usize> to &[usize]
+        let indices_slice: Vec<usize> = indices.to_vec(); // Convert Array1<usize> to Vec<usize>
+        let indices_ref: &[usize] = &indices_slice; // Convert Vec<usize> to &[usize]
+
+        // Filter `vecs` and `ns` based on the indices
+        let vecs_filtered = vecs.select(Axis(0), indices_ref);
+        let ns_filtered = ns.select(Axis(0), indices_ref);
+
+        let mut possible_cn: Vec<(Array1<f64>, i32)> = Vec::new();
+        let mut seen = vec![false; vecs_filtered.len_of(Axis(0))];
+
+        for (k, v) in vecs_filtered.axis_iter(Axis(0)).enumerate() {
+            if !seen[k] {
+                // Create boolean masks
+                let where1 = vecs_filtered
+                    .slice(s![k.., ..])
+                    .map_axis(Axis(1), |x| (&x - &v).mapv(f64::abs).sum() < TOLERANCE);
+
+                let where2 = vecs_filtered
+                    .slice(s![k.., ..])
+                    .map_axis(Axis(1), |x| (&x + &v).mapv(f64::abs).sum() < TOLERANCE);
+
+                // Update seen indices
+                for i in where1.indexed_iter()
+                    .filter_map(|(i, &x)| if x { Some(i) } else { None })
+                    .chain(where2.indexed_iter().filter_map(|(i, &x)| if x { Some(i) } else { None })) {
+                        seen[k + i] = true;
+                }
+
+                // Calculate `vk` using indices
+                let indices1: Array1<usize> = Array1::from_vec(
+                    where1.indexed_iter()
+                        .filter_map(|(i, &x)| if x { Some(i) } else { None })
+                        .collect()
+                );
+                let indices2: Array1<usize> = Array1::from_vec(
+                    where2.indexed_iter()
+                        .filter_map(|(i, &x)| if x { Some(i) } else { None })
+                        .collect()
+                );
+
+                let indices1_slice: Vec<usize> = indices1.to_vec();
+                let indices1_ref: &[usize] = &indices1_slice;
+
+                let indices2_slice: Vec<usize> = indices2.to_vec();
+                let indices2_ref: &[usize] = &indices2_slice;
+
+                let slice1 = vecs_filtered.select(Axis(0), indices1_ref);
+                let slice2 = vecs_filtered.select(Axis(0), indices2_ref);
+                let vk = normalize(&(slice1 - slice2)).sum_axis(Axis(0));
+
+                // Add to possible_cn
+                for n in ns_filtered.select(Axis(0), indices1_ref).iter()
+                    .chain(ns_filtered.select(Axis(0), indices2_ref).iter()) {
+                    possible_cn.push((vk.to_owned(), *n));
+                }
+            }
+        }
+
+        possible_cn
+    }
+    
+    fn has_rotation(&self, axis: &ArrayView1<f64>, n: usize) -> bool {
+        let theta = 2.0 * std::f64::consts::PI / n as f64;
+        let op = rotation_mat(axis, theta).t().to_owned();
+        self.symmetric_for(SymmetryOp::Matrix(op.clone()))
+    }
+    fn has_mirror(&self, perp_vec: &Array1<f64>) -> bool {
+        let householder_matrix = householder(perp_vec);
+        let transposed_householder = householder_matrix.t(); 
+        
+        self.symmetric_for(SymmetryOp::Matrix(transposed_householder.to_owned().clone()))
+            // .iter()
+            // .all(|&x| x)
+            // .iter()
+            // .all(|&x| x)
+    }
+
+    fn search_c_highest(&mut self, zaxis: Option<&Array1<f64>>) -> (Array1<f64>, usize) {
+        let possible_cn = self.search_possible_rotations(zaxis);
+        let mut nmax = 1;
+        let mut cmax = Array1::from_vec(vec![0.0, 0.0, 1.0]);
+
+        for (cn, n) in possible_cn {
+            if n > nmax && self.has_rotation(&cn.view(), n as usize) {
+                nmax = n;
+                cmax = cn;
+            }
+        }
+
+        (cmax, nmax as usize)
+    }
+    fn search_c2x(&self, zaxis: &Array1<f64>,n: usize) -> Option<Array1<f64>> {
+        let decimals = (-f64::log10(TOLERANCE)).floor() as usize - 1;
+        let mut maybe_c2x = Vec::new();
+        
+        for lst in self.group_atoms_by_distance.clone() {
+            if lst.len() > 1 {
+                let r0 = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap().select(Axis(0), &lst);
+                let zcos = r0.dot(zaxis);
+                let zcos = zcos.map(|x| (x / TOLERANCE).round() * TOLERANCE);
+                let (_, uniq_zcos) = get_unique_and_indices(&zcos);
+                
+                for d in uniq_zcos {
+                    if d as f64 > TOLERANCE {
+                        let mirrord = zcos.mapv(|x| (x - d as f64).abs() < TOLERANCE);
+                        
+                        if mirrord.iter().filter(|&&b| b).count() == zcos.iter().filter(|&&v| v == d as f64).count() {
+                            let above_indices: Vec<usize> = zcos
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, &v)| if v == d as f64 { Some(i) } else { None })
+                                .collect();
+                            let above = r0.select(Axis(0), &above_indices);
+                
+                            let below_indices: Vec<usize> = mirrord
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, &v)| if v { Some(i) } else { None })
+                                .collect();
+                            let below = r0.select(Axis(0), &below_indices);
+                
+                            for i in 0..below.nrows() {
+                                maybe_c2x.push(above.row(0).to_owned() + below.row(i).to_owned());
+                            }
+                        }
+                    } else if (d as f64).abs() < TOLERANCE {
+                        let r1_indices: Vec<usize> = zcos
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &v)| if v == d as f64 { Some(i) } else { None })
+                            .collect();
+                        let r1 = r0.select(Axis(0), &r1_indices).row(0).to_owned();
+                
+                        maybe_c2x.push(r1.clone());
+                        
+                        let r2 = rotation_mat(&zaxis.view(), 2.0 * std::f64::consts::PI / n as f64).dot(&r1);
+                
+                        if (r1.clone() + r2.clone()).sum() > TOLERANCE {
+                            maybe_c2x.push(r1 + r2);
+                        } else {
+                            maybe_c2x.push(r2 - r1);
+                        }
+                    }
+                }
+                
+                if !maybe_c2x.is_empty() {
+                    maybe_c2x = _normalize(maybe_c2x);
+                    
+                    let num_rows = maybe_c2x.len();
+                    let num_cols = maybe_c2x.first().unwrap().len();
+
+                    let mut array2 = Array2::zeros((num_rows, num_cols));
+                    for (i, row) in maybe_c2x.clone().into_iter().enumerate() {
+                        array2.row_mut(i).assign(&row);
+                    }
+
+                
+                    let maybe_c2x = _remove_dupvec(&mut array2);
+                    let maybe_c2x: Vec<Array1<f64>> = maybe_c2x.outer_iter().map(|row| row.to_owned()).collect();
+                    for c2x in maybe_c2x {
+                        if !parallel_vectors(&c2x.view(), &zaxis.view(), TOLERANCE) && self.has_rotation(&c2x.view(), 2) {
+                            return Some(c2x);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn search_mirrorx(&self, zaxis: Option<&Array1<f64>>,n: usize) -> Option<Array1<f64>> {
+        if n > 1 {
+            for lst in self.group_atoms_by_distance.clone() {
+                let natm = lst.len();
+                let r0 = Array2::from_shape_vec(
+                    (self.atoms.len(), self.atoms[0].len()),
+                    self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()
+                ).unwrap().row(lst[0]).slice(s![1..]).to_owned();
+                if natm > 1 && !parallel_vectors(&r0.view(), &zaxis.unwrap().view(), TOLERANCE) {
+                    let r1 = rotation_mat(&zaxis.unwrap().view(), 2.0 * std::f64::consts::PI / n as f64).dot(&r0);
+                    let mirrorx = _normalize(vec![r1 - r0])[0].clone();
+                    if self.has_mirror(&mirrorx) {
+                        return Some(mirrorx);
+                    }
+                }
+            }
+        } else {
+            for lst in self.group_atoms_by_distance.clone() {
+                let natm = lst.len();
+                if natm > 1 {
+                    let r0 = Array2::from_shape_vec(
+                        (self.atoms.len(), self.atoms[0].len()),
+                        self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()
+                    ).unwrap().select(Axis(0), &lst).slice(s![.., 1..]).to_owned();
+                    let mut maybe_mirror = Vec::new();
+                    for i in 1..r0.nrows() {
+                        let row_i = r0.row(i).to_owned(); 
+                        let row_0 = r0.row(0).to_owned(); 
+                        
+                        let diff = &row_i - &row_0;
+                        maybe_mirror.push(diff);
+                    }
+                    let maybe_mirror = _normalize(maybe_mirror);
+                    for mirror in maybe_mirror {
+                        if self.has_mirror(&mirror) {
+                            return Some(mirror);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+    fn has_improper_rotation(&self, axis: &ArrayView1<f64>, n: usize) -> bool {
+
+
+        let s_op = householder(&axis.to_owned()).dot(&rotation_mat(axis, std::f64::consts::PI / n as f64)).reversed_axes();
+        
+        self.symmetric_for(SymmetryOp::Matrix(s_op.clone()))
+    }
+    
+
+}
+enum SymmetryOp {
+    Scalar(f64), // 例如 -1
+    Matrix(Array2<f64>), // 旋转矩阵
 }
 
 fn _rm_digit(symb: &str) -> String {
@@ -831,151 +1232,404 @@ fn degeneracy(e: &Array1<f64>, decimals: usize) -> (Array1<usize>, Vec<f64>) {
     (Array1::from(degeneracies), unique_values)
 }
 
-// fn search_i_group(rawsys: &SymmSys) -> (Option<String>, Option<Vec<Array1<f64>>>) {
-//     let possible_cn = rawsys.search_possible_rotations();
-//     let c5_axes: Vec<Array1<f64>> = possible_cn
-//         .iter()
-//         .filter_map(|(axis, n)| {
-//             if *n == 5 && rawsys.has_rotation(axis, 5) {
-//                 Some(axis.clone())
-//             } else {
-//                 None
-//             }
-//         })
-//         .collect();
+fn search_i_group(rawsys: &mut SymmSys) -> (Option<String>, Option<Vec<Array1<f64>>>) {
+    let possible_cn = rawsys.search_possible_rotations(None);
+    let c5_axes: Vec<Array1<f64>> = possible_cn
+        .iter()
+        .filter_map(|(axis, n)| {
+            if *n == 5 && rawsys.has_rotation(&axis.view(), 5) {
+                Some(axis.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
-//     if c5_axes.len() <= 1 {
-//         return (None, None);
-//     }
+    if c5_axes.len() <= 1 {
+        return (None, None);
+    }
 
-//     let zaxis = c5_axes[0].clone();
-//     let cos: Vec<f64> = c5_axes.iter()
-//         .skip(1)
-//         .map(|axis| {
-//             axis.dot(&zaxis)
-//         })
-//         .collect();
+    let zaxis = c5_axes[0].clone();
+    let cos: Vec<f64> = c5_axes.iter()
+        .skip(1)
+        .map(|axis| {
+            axis.dot(&zaxis)
+        })
+        .collect();
 
-//     if !cos.iter().all(|&c| {
-//         (c.abs() - 1.0 / (5.0 as f64).sqrt()).abs() < TOLERANCE
-//     }) {
-//         return (None, None);
-//     }
+    if !cos.iter().all(|&c| {
+        (c.abs() - 1.0 / (5.0 as f64).sqrt()).abs() < TOLERANCE
+    }) {
+        return (None, None);
+    }
 
-//     let gpname = if rawsys.has_icenter() { "Ih" } else { "I" };
+    let gpname = if rawsys.has_icenter() { "Ih" } else { "I" };
 
-//     let mut c5 = c5_axes[1].clone();
-//     if c5.dot(&zaxis) < 0.0 {
-//         c5 *= -1.0;
-//     }
+    let mut c5 = c5_axes[1].clone();
+    if c5.dot(&zaxis) < 0.0 {
+        c5 *= -1.0;
+    }
 
-//     let c5a = rotation_mat(zaxis.clone(), 6.0 * PI / 5.0).dot(&c5);
-//     let xaxis = &c5a + &c5;
+    let c5a = rotation_mat(&zaxis.view(), 6.0 * std::f64::consts::PI / 5.0).dot(&c5);
+    let xaxis = &c5a + &c5;
 
-//     (Some(gpname.to_string()), Some(vec![zaxis, xaxis]))
-// }
-// lazy_static! {
-//     static ref OPERATOR_TABLE: HashMap<&'static str, Vec<&'static str>> = {
-//         let mut m = HashMap::new();
-//         m.insert("D2h", vec!["E", "C2x", "C2y", "C2z", "i", "sx", "sy", "sz"]);
-//         m.insert("C2h", vec!["E", "C2z", "i", "sz"]);
-//         m.insert("C2v", vec!["E", "C2z", "sx", "sy"]);
-//         m.insert("D2", vec!["E", "C2x", "C2y", "C2z"]);
-//         m.insert("Cs", vec!["E", "sz"]);
-//         m.insert("Ci", vec!["E", "i"]);
-//         m.insert("C2", vec!["E", "C2z"]);
-//         m.insert("C1", vec!["E"]);
-//         m
-//     };
-// }
-// use std::collections::HashSet;
-// #[derive(Debug)]
-// struct PointGroupSymmetryError(String);
+    (Some(gpname.to_string()), Some(vec![zaxis, xaxis]))
+}
+fn search_ot_group(rawsys: &mut SymmSys) -> (Option<String>, Option<Vec<Array1<f64>>>) {
+    let possible_cn = rawsys.search_possible_rotations(None);
 
-// fn argsort_coords(coords: &Array2<f64>) -> Vec<usize> {
-//     let mut indices: Vec<usize> = (0..coords.len_of(Axis(0))).collect();
-//     indices.sort_by(|&i, &j| {
-//         let a = coords.slice(s![i, ..]);
-//         let b = coords.slice(s![j, ..]);
-//         a.iter().partial_cmp(b.iter()).unwrap_or(Ordering::Equal)
-//     });
-//     indices
-// }
+    let c4_axes: Vec<Array1<f64>> = possible_cn
+        .iter()
+        .filter_map(|(axis, n)| {
+            if *n == 4 && rawsys.has_rotation(&axis.view(), 4) {
+                Some(axis.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
-// fn symm_ops(gpname: &str) -> HashMap<String, Array2<f64>> {
-//     let mut opdic = HashMap::new();
-//     opdic.insert("sz".to_string(), Array2::eye(3)); // Placeholder
-//     opdic
-// }
+    if !c4_axes.is_empty() {
+        
+        if c4_axes.len() > 1 {
+            let gpname = if rawsys.has_icenter() { "Oh" } else { "O" };
+            return (Some(gpname.to_string()), Some(vec![c4_axes[0].clone(), c4_axes[1].clone()]));
+        }
+    } else {
 
-// fn symm_identical_atoms(gpname: &str, atoms: Vec<(String, Array1<f64>)>) -> Result<Vec<Vec<usize>>, PointGroupSymmetryError> {
-//     if gpname == "Dooh" {
-//         let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
-//         let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
+        let c3_axes: Vec<Array1<f64>> = possible_cn
+            .iter()
+            .filter_map(|(axis, n)| {
+                if *n == 3 && rawsys.has_rotation(&axis.view(), 3) {
+                    Some(axis.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-//         let idx0 = argsort_coords(&coords_array);
-//         let coords0 = coords_array.select(Axis(0), &idx0);
+        if c3_axes.len() <= 1 {
+            return (None, None);
+        }
 
-//         let opdic = symm_ops(gpname);
-//         let newc = coords_array.dot(&opdic["sz"]);
-//         let idx1 = argsort_coords(&newc);
+        let cos: Vec<f64> = c3_axes.iter()
+            .skip(1)
+            .map(|axis| axis.dot(&c3_axes[0]))
+            .collect();
 
-//         let mut dup_atom_ids: Vec<Vec<usize>> = vec![idx0.clone(), idx1.clone()];
-//         dup_atom_ids.sort_by(|a, b| a[0].cmp(&b[0]));
-//         let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
+        if !cos.iter().all(|&c| {
+            (c.abs() - 1.0 / 3.0).abs() < TOLERANCE
+        }) {
+            return (None, None);
+        }
 
-//         let eql_atom_ids = uniq_idx.into_iter()
-//             .map(|i| {
-//                 let mut s: Vec<usize> = vec![i];
-//                 s.sort();
-//                 s
-//             })
-//             .collect::<Vec<_>>();
+        let gpname = if rawsys.has_icenter() {
+            "Th"
+        } else if rawsys.has_mirror(&cross(&c3_axes[0].view(), &c3_axes[1].view())) {
+            "Td"
+        } else {
+            "T"
+        };
 
-//         return Ok(eql_atom_ids);
-//     } else if gpname == "Coov" {
-//         let eql_atom_ids = (0..atoms.len()).map(|i| vec![i]).collect::<Vec<Vec<usize>>>();
-//         return Ok(eql_atom_ids);
-//     }
+        let mut c3a = c3_axes[0].clone();
+        if c3a.dot(&c3_axes[1]) > 0.0 {
+            c3a *= -1.0;
+        }
 
-//     // Fallback for other point groups
-//     let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
-//     let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
+        let c3b = rotation_mat(&c3a.view(), -2.0 * std::f64::consts::PI / 3.0).dot(&c3_axes[1]);
+        let c3c = rotation_mat(&c3a.view(), 2.0 * std::f64::consts::PI / 3.0).dot(&c3_axes[1]);
+
+        let zaxis = &c3a + &c3b;
+        let xaxis = &c3a + &c3c;
+
+        return (Some(gpname.to_string()), Some(vec![zaxis, xaxis]));
+    }
+
+    (None, None)
+}
+
+lazy_static! {
+    static ref OPERATOR_TABLE: HashMap<&'static str, Vec<&'static str>> = {
+        let mut m = HashMap::new();
+        m.insert("D2h", vec!["E", "C2x", "C2y", "C2z", "i", "sx", "sy", "sz"]);
+        m.insert("C2h", vec!["E", "C2z", "i", "sz"]);
+        m.insert("C2v", vec!["E", "C2z", "sx", "sy"]);
+        m.insert("D2", vec!["E", "C2x", "C2y", "C2z"]);
+        m.insert("Cs", vec!["E", "sz"]);
+        m.insert("Ci", vec!["E", "i"]);
+        m.insert("C2", vec!["E", "C2z"]);
+        m.insert("C1", vec!["E"]);
+        m
+    };
+}
+use std::collections::HashSet;
+#[derive(Debug)]
+struct PointGroupSymmetryError(String);
+
+fn argsort_coords(coords: &Array2<f64>) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..coords.len_of(Axis(0))).collect();
+    indices.sort_by(|&i, &j| {
+        let a = coords.slice(s![i, ..]);
+        let b = coords.slice(s![j, ..]);
+        a.iter().partial_cmp(b.iter()).unwrap_or(Ordering::Equal)
+    });
+    indices
+}
+
+fn symm_ops(gpname: &str) -> HashMap<String, Array2<f64>> {
+    let mut opdic = HashMap::new();
+    opdic.insert("sz".to_string(), Array2::eye(3)); // Placeholder
+    opdic
+}
+
+fn symm_identical_atoms(gpname: &str, atoms: Vec<(String, Array1<f64>)>) -> Result<Vec<Vec<usize>>, PointGroupSymmetryError> {
+    if gpname == "Dooh" {
+        let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
+        let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
+
+        let idx0 = argsort_coords(&coords_array);
+        let coords0 = coords_array.select(Axis(0), &idx0);
+
+        let opdic = symm_ops(gpname);
+        let newc = coords_array.dot(&opdic["sz"]);
+        let idx1 = argsort_coords(&newc);
+
+        let mut dup_atom_ids: Vec<Vec<usize>> = vec![idx0.clone(), idx1.clone()];
+        dup_atom_ids.sort_by(|a, b| a[0].cmp(&b[0]));
+        let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
+
+        let eql_atom_ids = uniq_idx.into_iter()
+            .map(|i| {
+                let mut s: Vec<usize> = vec![i];
+                s.sort();
+                s
+            })
+            .collect::<Vec<_>>();
+
+        return Ok(eql_atom_ids);
+    } else if gpname == "Coov" {
+        let eql_atom_ids = (0..atoms.len()).map(|i| vec![i]).collect::<Vec<Vec<usize>>>();
+        return Ok(eql_atom_ids);
+    }
+
+    // Fallback for other point groups
+    let coords: Vec<f64> = atoms.iter().map(|a| a.1.clone()).flatten().collect();
+    let coords_array = Array2::from_shape_vec((atoms.len(), 3), coords).unwrap();
     
-//     let opdic = symm_ops(gpname);
-//     let ops = OPERATOR_TABLE[gpname]
-//         .iter()
-//         .map(|op| opdic[&op.to_string()].clone())
-//         .collect::<Vec<_>>();
+    let opdic = symm_ops(gpname);
+    let ops = OPERATOR_TABLE[gpname]
+        .iter()
+        .map(|op| opdic[&op.to_string()].clone())
+        .collect::<Vec<_>>();
 
-//     let mut dup_atom_ids = vec![];
+    let mut dup_atom_ids = vec![];
 
-//     let idx = argsort_coords(&coords_array);
-//     let coords0 = coords_array.select(Axis(0), &idx);
+    let idx = argsort_coords(&coords_array);
+    let coords0 = coords_array.select(Axis(0), &idx);
 
-//     for op in ops {
-//         let newc = coords_array.dot(&op);
-//         let idx = argsort_coords(&newc);
+    for op in ops {
+        let newc = coords_array.dot(&op);
+        let idx = argsort_coords(&newc);
 
-//         if !coords0.iter().zip(newc.select(Axis(0), &idx).iter()).all(|(a, b)| (*a - *b).abs() < TOLERANCE) {
-//             return Err(PointGroupSymmetryError("Symmetry identical atoms not found".to_string()));
-//         }
+        if !coords0.iter().zip(newc.select(Axis(0), &idx).iter()).all(|(a, b)| (*a - *b).abs() < TOLERANCE) {
+            return Err(PointGroupSymmetryError("Symmetry identical atoms not found".to_string()));
+        }
 
-//         dup_atom_ids.push(idx);
-//     }
+        dup_atom_ids.push(idx);
+    }
 
-//     dup_atom_ids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-//     let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
+    dup_atom_ids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let uniq_idx = dup_atom_ids.iter().map(|v| v[0]).collect::<Vec<_>>();
     
-//     let eql_atom_ids = uniq_idx.into_iter()
-//         .map(|i| {
-//             let mut s: HashSet<usize> = HashSet::new();
-//             s.insert(i);
-//             let mut sorted_vec = s.into_iter().collect::<Vec<_>>();
-//             sorted_vec.sort();
-//             sorted_vec
-//         })
-//         .collect::<Vec<_>>();
+    let eql_atom_ids = uniq_idx.into_iter()
+        .map(|i| {
+            let mut s: HashSet<usize> = HashSet::new();
+            s.insert(i);
+            let mut sorted_vec = s.into_iter().collect::<Vec<_>>();
+            sorted_vec.sort();
+            sorted_vec
+        })
+        .collect::<Vec<_>>();
 
-//     Ok(eql_atom_ids)
-// }
+    Ok(eql_atom_ids)
+}
+
+fn normalize(vec: &ArrayView1<f64>) -> Array1<f64> {
+    let norm = vec.iter().map(|&x| x * x).sum::<f64>().sqrt();
+    vec.map(|&x| x / norm).to_owned()
+}
+
+fn rotation_mat(vec: &ArrayView1<f64>, theta: f64) -> Array2<f64> {
+    let vec = normalize(&vec.view());
+    
+    let uu = {
+        let vec = vec.view();
+        let outer_product = Array2::from_shape_fn((3, 3), |(i, j)| vec[i] * vec[j]);
+        outer_product
+    };
+    
+    let ux = Array2::from_shape_fn((3, 3), |(i, j)| {
+        match (i, j) {
+            (0, 1) => -vec[2],
+            (0, 2) => vec[1],
+            (1, 0) => vec[2],
+            (1, 2) => -vec[0],
+            (2, 0) => -vec[1],
+            (2, 1) => vec[0],
+            _ => 0.0,
+        }
+    });
+    
+    let c = theta.cos();
+    let s = theta.sin();
+    let identity = Array2::eye(3);
+    
+    let r = &identity * c + &ux * s + &uu * (1.0 - c);
+    
+    r
+}
+fn cross(a: &ArrayView1<f64>, b: &ArrayView1<f64>) -> Array1<f64> {
+    assert_eq!(a.len(), 3);
+    assert_eq!(b.len(), 3);
+
+    Array1::from(vec![
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ])
+}
+fn householder(vec: &Array1<f64>) -> Array2<f64> {
+    let vec = normalize(&vec.view()); 
+    let eye = Array2::eye(3); 
+    let outer_product = vec.view().to_owned().insert_axis(ndarray::Axis(1)).dot(&vec.view().to_owned().insert_axis(ndarray::Axis(0)));
+    eye - outer_product * 2.0 
+}
+use ndarray_linalg::Determinant;
+fn _refine(mut axes: Array2<f64>) -> Array2<f64> {
+    
+    if axes[(2, 2)] < 0.0 {
+        axes.row_mut(2).mapv_inplace(|x| -x);
+    }
+
+    let (x_id, y_id) = if axes[(0, 0)].abs() > axes[(1, 0)].abs() {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    if axes[(x_id, 0)] < 0.0 {
+        axes.row_mut(x_id).mapv_inplace(|x| -x);
+    }
+
+    if axes.det().unwrap() < 0.0 {
+        axes.row_mut(y_id).mapv_inplace(|x| -x);
+    }
+
+    axes
+}
+use ndarray_linalg::Norm;
+fn _normalize(vectors: Vec<Array1<f64>>) -> Vec<Array1<f64>> {
+    vectors.into_iter()
+        .map(|v| {
+            let norm = v.norm();
+            if norm > 0.0 {
+                v / norm
+            } else {
+                v
+            }
+        })
+        .collect()
+}
+fn _make_axes(z: &ArrayView1<f64>, x: &ArrayView1<f64>) -> Array2<f64> {
+
+    let y = cross(z, x);
+
+    let x = cross(&y.view(), z);
+
+    let axes = vec![
+        x.to_owned(),
+        y.to_owned(),
+        z.to_owned(),
+    ];
+    let normalized_axes = _normalize(axes);
+
+    let mut result = Array2::zeros((3, 3));
+    for (i, axis) in normalized_axes.iter().enumerate() {
+        result.slice_mut(s![i, ..]).assign(axis);
+    }
+    
+    result
+}
+fn parallel_vectors(v1: &ArrayView1<f64>, v2: &ArrayView1<f64>, tol: f64) -> bool {
+    if v1.iter().all(|&x| (x - 0.0).abs() < tol) || v2.iter().all(|&x| (x - 0.0).abs() < tol) {
+        return true;
+    }
+
+    let norm_v1 = _normalize(vec![v1.to_owned()]);
+    let norm_v1 = norm_v1[0].view(); 
+    let norm_v2 = _normalize(vec![v2.to_owned()]);
+    let norm_v2 = norm_v2[0].view(); 
+
+    let cos = norm_v1.dot(&norm_v2);
+
+    ( (cos - 1.0).abs() < tol ) || ( (cos + 1.0).abs() < tol )
+}
+fn _remove_dupvec(vs: &mut Array2<f64>) -> Array2<f64> {
+    fn rm_iter(vs: Array2<f64>) -> Array2<f64> {
+        let nrows = vs.nrows();
+
+        if nrows <= 1 {
+            return vs;
+        } else {
+            let first_row = vs.row(0).to_owned();
+            let rest_rows = vs.slice(s![1.., ..]).to_owned();
+            let x = rest_rows.map_axis(Axis(1), |row| {
+                let diff = row.to_owned() - first_row.to_owned(); 
+                diff.mapv(f64::abs).sum()
+            });
+            let valid_indices: Vec<usize> = x
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &val)| if val > TOLERANCE { Some(i + 1) } else { None })
+                .collect();
+
+            let rest_filtered = vs.select(Axis(0), &valid_indices);
+
+            let rest = rm_iter(rest_filtered);
+
+            let mut result = Array2::zeros((1 + rest.nrows(), vs.ncols()));
+            result.slice_mut(s![0, ..]).assign(&first_row);
+            result.slice_mut(s![1.., ..]).assign(&rest);
+
+            result
+        }
+    }
+
+    let pseudo_vs = _pseudo_vectors(vs);
+    rm_iter(pseudo_vs)
+}
+fn _pseudo_vectors(vs: &mut Array2<f64>) -> Array2<f64> {
+    let tolerance = 1e-5;
+    let mut vs = vs.to_owned();
+
+    let idy0 = vs.column(1).mapv(|v| v.abs() < tolerance);
+
+    let idz0 = vs.column(2).mapv(|v| v.abs() < tolerance);
+
+    for mut row in vs.outer_iter_mut() {
+        if row[2] < 0.0 {
+            row.mapv_inplace(|x| -x);
+        }
+    }
+    for (mut row, &idz) in vs.outer_iter_mut().zip(idz0.iter()) {
+        if row[1] < 0.0 && idz {
+            row.mapv_inplace(|x| -x);
+        }
+    }
+    for (mut row, (&idy, &idz)) in vs.outer_iter_mut().zip(idy0.iter().zip(idz0.iter())) {
+        if row[0] < 0.0 && idy && idz {
+            row.mapv_inplace(|x| -x);
+        }
+    }
+
+    vs
+}
