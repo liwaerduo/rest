@@ -212,6 +212,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             }
         }
         if contains(&w1_degeneracy, 3) {
+            println!("3 in w1_degeneracy:");
             // T, O, I
             let (w3, u3) = rawsys.cartesian_tensor(3);
             let (w3_degeneracy, w3_degen_values) = degeneracy(&w3, decimals);
@@ -228,7 +229,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                 }
             }
         } else if contains(&w1_degeneracy, 2) && w2_degeneracy.iter().any(|&x| x >= 2) {
-            
+            println!("2 in w1_degeneracy and numpy.any(w2_degeneracy[w2_degen_values>0] >= 2)");
 
             let view1 = w1.index_axis(Axis(0), 1).to_owned();
             let view2 = w1.index_axis(Axis(0), 2).to_owned();
@@ -252,24 +253,27 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                     reordered_axes[new_position] = val;
                 }
             }       
+            println!("axes{:?}",axes);
+            axes = axes.select(Axis(0), &[1, 2, 0]);
+            
 
-            let axis_view = axes.index_axis(Axis(1), 2);
-
-            let axis_owned = axis_view.to_owned();
-
-            let axis_option = Some(&axis_owned);
-
-            let (c_highest, n) = rawsys.search_c_highest(axis_option);
+            println!("search_c_highest start");
+            println!("axes[2]{:?}", &axes.index_axis(Axis(0), 2).to_owned());
+            let (c_highest, n) = rawsys.search_c_highest(Some(&axes.index_axis(Axis(0), 2).to_owned()));
+            println!("search_c_highest end");
+            println!("n{:?}",n);
             let n = if n == 1 { None } else {
-                let c2x = rawsys.search_c2x(&axis_option.unwrap(), n);
-                let mirrorx = rawsys.search_mirrorx(axis_option, n);
+                let c2x = rawsys.search_c2x(&axes.index_axis(Axis(0), 2).to_owned(), n);
+                let mirrorx = rawsys.search_mirrorx(Some(&axes.index_axis(Axis(0), 2).to_owned()), n);
                 Some((c2x, mirrorx))
             };
         } else {
             let n = -1; 
             
         }
+        println!("n{:?}",n);
         if let None = n {
+            println!("n is None");
             let (zaxis, n) = rawsys.search_c_highest(None);
             if n > 1 {
                 if let Some(c2x) = rawsys.search_c2x(&zaxis, n) {
@@ -683,8 +687,15 @@ impl SymmSys {
         for lst in self.group_atoms_by_distance.clone() {
             let natm = lst.len();
             if natm > 1 {
+                println!("natm > 1");
+                println!("atoms{:?}", self.atoms);
                 let coords = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap().select(Axis(0), &lst.iter().map(|&x| x).collect::<Vec<_>>());
 
+
+                
+                println!("coords{:?}", coords);
+                let coords = coords.slice(s![.., 1..]).to_owned();
+                println!("coords{:?}", coords);
                 
                 for i in 1..natm {
                     let row0 = coords.row(0).to_owned();
@@ -698,6 +709,7 @@ impl SymmSys {
                 }
                 
                 let r0 = &coords - &coords.row(0);
+                println!("r0{:?}", r0);
                 let distance = norm(&r0, Axis(1));
                 let distance_reshaped = distance.view().insert_axis(Axis(1)); 
                 let eq_distance = &distance_reshaped - &distance.view().broadcast((distance.len(), distance.len())).unwrap();
@@ -712,6 +724,7 @@ impl SymmSys {
                         let nfrac = 2.0 * std::f64::consts::PI / (std::f64::consts::PI - ang);
                         let n = (nfrac.round() as i32);
                         if (nfrac - n as f64).abs() < TOLERANCE {
+                            println!("r0{:?}", r0);
                             let cross_prod = cross(&r0.row(i), &r0.row(j));
                             maybe_cn.push((cross_prod.to_owned(), n));
                         }
@@ -720,76 +733,120 @@ impl SymmSys {
             }
         }
 
-
+        println!("maybe_cn: {:?}", maybe_cn);
         
         let vecs: Vec<Array1<f64>> = maybe_cn.iter().map(|x| x.0.clone()).collect();
         let vecs_stacked: Array2<f64> = stack(Axis(0), &vecs.iter().map(|x| x.view()).collect::<Vec<_>>()).unwrap();
         let vecs = vecs_stacked;
+        println!("vecs: {:?}", vecs);
 
         let ns: Array1<i32> = maybe_cn.iter().map(|x| x.1).collect::<Vec<_>>().into();
         let idx = norm(&vecs, Axis(1)).mapv(|x| x > TOLERANCE);
-
-        // Convert `Vec<usize>` to `Array1<usize>`
+        println!("idx{:?}", idx);
         let indices: Array1<usize> = Array1::from_vec(
             idx.indexed_iter()
                 .filter_map(|(i, &x)| if x { Some(i) } else { None })
                 .collect()
         );
+        println!("indices{:?}", indices);
+        let indices_slice: Vec<usize> = indices.to_vec(); 
+        let indices_ref: &[usize] = &indices_slice; 
+        let vecs = vecs.select(Axis(0), indices_ref);
+        println!("vecs{:?}", vecs);
+        let mut vecs = normalize(&vecs);
+        println!("_normalize(vecs[idx]){:?}", vecs);
 
-        // Convert Array1<usize> to &[usize]
-        let indices_slice: Vec<usize> = indices.to_vec(); // Convert Array1<usize> to Vec<usize>
-        let indices_ref: &[usize] = &indices_slice; // Convert Vec<usize> to &[usize]
+        
 
-        // Filter `vecs` and `ns` based on the indices
-        let vecs_filtered = vecs.select(Axis(0), indices_ref);
-        let ns_filtered = ns.select(Axis(0), indices_ref);
+        let mut ns = ns.select(Axis(0), &indices.to_vec());
+        println!("zaxis{:?}", zaxis);
+        if let Some(zaxis) = zaxis {
+            println!("zaxis is not None");
+            fn normalize(vec: &ArrayView1<f64>) -> Array1<f64> {
+                let norm = vec.iter().map(|&x| x * x).sum::<f64>().sqrt();
+                vec.map(|&x| x / norm).to_owned()
+            }
+            let zaxis_norm = normalize(&zaxis.view());
+            println!("zaxis normalized: {:?}", zaxis_norm);
+            let cos = vecs.dot(&zaxis_norm);
+            println!("cos: {:?}", cos);
+            let mask = cos.mapv(|c| (c - 1.0).abs() < TOLERANCE || (c + 1.0).abs() < TOLERANCE);
+            println!("mask: {:?}", mask);
+            let indices: Vec<usize> = mask.indexed_iter()
+                .filter_map(|(i, &m)| if m { Some(i) } else { None })
+                .collect();
+            println!("selected indices: {:?}", indices);
+            vecs = vecs.select(Axis(0), &indices);
+            ns = ns.select(Axis(0), &indices);
+        }
+
+        println!("vecs{:?}", vecs);
 
         let mut possible_cn: Vec<(Array1<f64>, i32)> = Vec::new();
-        let mut seen = vec![false; vecs_filtered.len_of(Axis(0))];
-
-        for (k, v) in vecs_filtered.axis_iter(Axis(0)).enumerate() {
+        let mut seen = vec![false; vecs.len_of(Axis(0))];
+        println!("seen{:?}", seen);
+        for (k, v) in vecs.axis_iter(Axis(0)).enumerate() {
             if !seen[k] {
-                // Create boolean masks
-                let where1 = vecs_filtered
-                    .slice(s![k.., ..])
-                    .map_axis(Axis(1), |x| (&x - &v).mapv(f64::abs).sum() < TOLERANCE);
+                println!("k{:?}",k);
+                println!("v{:?}",v);
+                
+                let vecs_slice = vecs.slice(s![k.., ..]);
+                let v_broadcasted = v.broadcast(vecs_slice.raw_dim()).unwrap();
 
-                let where2 = vecs_filtered
+                let diff = vecs_slice.to_owned() - v_broadcasted.to_owned();
+                let sum_abs_diff = diff.map_axis(Axis(1), |row| row.mapv(f64::abs).sum());
+
+                let where1_mask = sum_abs_diff.mapv(|x| x < TOLERANCE);
+
+                let where1: Vec<usize> = where1_mask.indexed_iter()
+                    .filter_map(|(i, &x)| if x { Some(i + k) } else { None })  
+                    .collect();
+
+                let where2 = vecs
                     .slice(s![k.., ..])
                     .map_axis(Axis(1), |x| (&x + &v).mapv(f64::abs).sum() < TOLERANCE);
 
-                // Update seen indices
-                for i in where1.indexed_iter()
-                    .filter_map(|(i, &x)| if x { Some(i) } else { None })
-                    .chain(where2.indexed_iter().filter_map(|(i, &x)| if x { Some(i) } else { None })) {
-                        seen[k + i] = true;
+                let vecs_slice = vecs.slice(s![k.., ..]);
+                let v_broadcasted = v.broadcast(vecs_slice.raw_dim()).unwrap();
+                let diff = vecs_slice.to_owned() + v_broadcasted.to_owned();
+                
+                let sum_abs_diff = diff.map_axis(Axis(1), |row| row.mapv(f64::abs).sum());
+            
+                let where2_mask = sum_abs_diff.mapv(|x| x < TOLERANCE);
+            
+                let where2: Vec<usize> = where2_mask.indexed_iter()
+                    .filter_map(|(i, &x)| if x { Some(i + k) } else { None })  
+                    .collect();
+                
+                println!("where1{:?}", where1);
+                println!("where2{:?}", where2);
+                
+                
+                for i in where1.iter() {
+                    seen[*i] = true;
+                
+                }
+                for i in where2.iter() {
+                    seen[*i] = true;
+                
                 }
 
-                // Calculate `vk` using indices
-                let indices1: Array1<usize> = Array1::from_vec(
-                    where1.indexed_iter()
-                        .filter_map(|(i, &x)| if x { Some(i) } else { None })
-                        .collect()
-                );
-                let indices2: Array1<usize> = Array1::from_vec(
-                    where2.indexed_iter()
-                        .filter_map(|(i, &x)| if x { Some(i) } else { None })
-                        .collect()
-                );
+                println!("seen{:?}", seen);
+                
 
-                let indices1_slice: Vec<usize> = indices1.to_vec();
-                let indices1_ref: &[usize] = &indices1_slice;
-
-                let indices2_slice: Vec<usize> = indices2.to_vec();
-                let indices2_ref: &[usize] = &indices2_slice;
-
-                let slice1 = vecs_filtered.select(Axis(0), indices1_ref);
-                let slice2 = vecs_filtered.select(Axis(0), indices2_ref);
-                let vk = normalize(&(slice1 - slice2)).sum_axis(Axis(0));
-
+                let slice1 = vecs.select(Axis(0), &where1).sum_axis(Axis((0)));
+                let slice2 = vecs.select(Axis(0), &where2).sum_axis(Axis((0)));
+                println!("slice1{:?}", slice1);
+                println!("slice2{:?}", slice2);
+                fn normalize(vec: &ArrayView1<f64>) -> Array1<f64> {
+                    let norm = vec.iter().map(|&x| x * x).sum::<f64>().sqrt();
+                    vec.map(|&x| x / norm).to_owned()
+                }
+                let vk = normalize(&(slice1 - slice2).view());
+                println!("vk{:?}", vk);
                 // Add to possible_cn
-                for n in ns_filtered.select(Axis(0), indices1_ref).iter()
-                    .chain(ns_filtered.select(Axis(0), indices2_ref).iter()) {
+                for n in ns.select(Axis(0), &where1).iter()
+                    .chain(ns.select(Axis(0), &where2).iter()) {
                     possible_cn.push((vk.to_owned(), *n));
                 }
             }
@@ -816,6 +873,7 @@ impl SymmSys {
 
     fn search_c_highest(&mut self, zaxis: Option<&Array1<f64>>) -> (Array1<f64>, usize) {
         let possible_cn = self.search_possible_rotations(zaxis);
+        println!("possible_cn: {:?}", possible_cn);
         let mut nmax = 1;
         let mut cmax = Array1::from_vec(vec![0.0, 0.0, 1.0]);
 
