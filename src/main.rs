@@ -56,6 +56,7 @@ use std::os::raw;
 use std::{f64, fs::File, io::Write};
 use std::path::PathBuf;
 use pyo3::prelude::*;
+use serde::__private::de;
 
 mod geom_io;
 mod basis_io;
@@ -292,11 +293,13 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             println!("n{:?}",n);
             if n.unwrap() > 1 {
                 if let Some(c2x) = rawsys.search_c2x(&zaxis, n.unwrap() as usize) {
+                    println!("11111111111111111111111111111111111111111111111111111");
                     axes = _make_axes(&zaxis.view(), &c2x.view());
                 } else if let Some(mirrorx) = rawsys.search_mirrorx(Some(&zaxis), n.unwrap() as usize) {
+                    println!("22222222222222222222222222222222222222222222222222222");
                     axes = _make_axes(&zaxis.view(), &mirrorx.view());
                 } else {
-
+                    println!("33333333333333333333333333333333333333333333333333333333333");
                     let identity_axes = vec![
                         array![1.0, 0.0, 0.0],
                         array![0.0, 1.0, 0.0],
@@ -366,7 +369,6 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                 }
                 axes = alias_axes(&axes, &Array2::<f64>::eye(3));
             } else if is_c2z || is_c2x || is_c2y {
-                // 旋转轴调整
                 if is_c2x {
                     axes = axes.select(Axis(0), &[1, 2, 0]);
                 }
@@ -383,7 +385,6 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                     gpname = Some("C2");
                 }
             } else {
-                // 处理没有 C2 对称性情况
                 if rawsys.has_icenter() {
                     gpname = Some("Ci");
                 } else if rawsys.has_mirror(&axes.row(0).to_owned()) {
@@ -607,7 +608,8 @@ impl SymmSys {
             let dist = around(&norms, decimals);
             println!("dist: {:?}", dist);
 
-            let (u, idx) = get_unique_and_indices(&dist);
+            let (mut u, mut idx) = get_unique_and_indices(&dist);
+            
             println!("u: {:?}", u);
             println!("idx: {:?}", idx);
             
@@ -618,9 +620,11 @@ impl SymmSys {
                     if idx[j] == i {
                         a.push(index[j]);
                     }
+                    
                 }
                 self.group_atoms_by_distance.push(a);
             }
+            
 
             println!("group_atoms_by_distance: {:?}", self.group_atoms_by_distance);
 
@@ -661,22 +665,22 @@ impl SymmSys {
                     result.slice_mut(s![z, i, ..]).assign(&outer_product);
                 }
             }
-            println!("result_before_reshape: {:?}", result);
+            // println!("result_before_reshape: {:?}", result);
             let reshaped_result = result.into_shape((natm, tensor_.shape()[1] * r.shape()[1])).unwrap();
-            println!("{}",tensor_.shape()[1]);
-            println!("{}",r.shape()[1]);
+            // println!("{}",tensor_.shape()[1]);
+            // println!("{}",r.shape()[1]);
             
             tensor_ = reshaped_result;
-            println!("tensor: {:?}", tensor_);
+            // println!("tensor: {:?}", tensor_);
         }
         let tensor = tensor_;
-        println!("tensor: {:?}", tensor);
+        // println!("tensor: {:?}", tensor);
 
         fn eigh_dot(tensor: Array2<f64>) -> (Array<f64, ndarray::Ix1>, Array2<f64>) {
             let tensor_t = tensor.t();
-            println!("tensor_t: {:?}", tensor_t);
+            // println!("tensor_t: {:?}", tensor_t);
             let dot_product = tensor_t.dot(&tensor);
-            println!("tensor.t().dot(&tensor){:?}",dot_product);
+            // println!("tensor.t().dot(&tensor){:?}",dot_product);
             let (eigvals, eigvecs) = dot_product.eigh(UPLO::Upper).unwrap(); 
             (eigvals, eigvecs)
         }
@@ -919,8 +923,15 @@ impl SymmSys {
                 }
             }
         }
+        let mut possible_cn_unq: Vec<(Array1<f64>, i32)> = Vec::new();
+        for i in possible_cn.iter() {
+            if !possible_cn_unq.contains(i) {
+                possible_cn_unq.push(i.clone());
+            }
+        }
 
-        possible_cn
+
+        possible_cn_unq
     }
     
     fn has_rotation(&self, axis: &ArrayView1<f64>, n: usize) -> bool {
@@ -954,6 +965,8 @@ impl SymmSys {
 
         (cmax, nmax as usize)
     }
+    // to do 
+    // fix search_c2x
     fn search_c2x(&self, zaxis: &Array1<f64>,n: usize) -> Option<Array1<f64>> {
         println!("zaxis: {:?}",zaxis);
         println!("n: {:?}",n);
@@ -1045,6 +1058,7 @@ impl SymmSys {
                 }
             }
         }
+        println!("search_c2x return None");
         None
     }
 
@@ -1360,9 +1374,11 @@ fn get_unique_and_indices(arr: &Array1<f64>) -> (Vec<f64>, Vec<usize>) {
             indices.push(new_index);
         }
     }
-
+    
     (unique_values, indices)
 }
+
+
 
 fn degeneracy(e: &Array1<f64>, decimals: usize) -> (Array1<usize>, Vec<f64>) {
     // Round the values to the specified number of decimal places
