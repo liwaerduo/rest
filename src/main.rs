@@ -189,7 +189,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
         println!("w2_degeneracy: {:?}",w2_degeneracy);
         println!("w2_degen_values: {:?}",w2_degen_values);
         
-        let n: Option<i32> = None;
+        let mut n: Option<i32> = None;
         let c2x:Option<Array1<f64>> = None;
         let mirrorx:Option<Array1<f64>> = None;
         fn contains(array: &Array1<usize>, value: usize) -> bool {
@@ -218,13 +218,17 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             let (w3_degeneracy, w3_degen_values) = degeneracy(&w3, decimals);
     
             if contains(&w2_degeneracy, 5) && contains(&w3_degeneracy, 4) && w3_degeneracy.len() == 3 {
-                if let (gpname, new_axes) = search_i_group(&mut rawsys) {
-                    println!("Group: {:?}, New Axes: {:?}", gpname, new_axes);
+                
+                let (gpname, new_axes) = search_i_group(&mut rawsys);
+                if let Some(gpname_value) = &gpname {
                     return (gpname.unwrap(), charge_center, _refine(convert_to_matrix(new_axes).unwrap()));
                 }
+
+
             } else if contains(&w2_degeneracy, 3) && w2_degeneracy.len() <= 3 {
-                if let (gpname, new_axes) = search_ot_group(&mut rawsys) {
-                    println!("Group: {}, New Axes: {:?}", gpname.clone().unwrap(), new_axes);
+                
+                let (gpname, new_axes) = search_ot_group(&mut rawsys);
+                if let Some(gpname_value) = &gpname {
                     return (gpname.unwrap(), charge_center, _refine(convert_to_matrix(new_axes).unwrap()));
                 }
             }
@@ -259,19 +263,28 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
 
             println!("search_c_highest start");
             println!("axes[2]{:?}", &axes.index_axis(Axis(0), 2).to_owned());
-            let (c_highest, n) = rawsys.search_c_highest(Some(&axes.index_axis(Axis(0), 2).to_owned()));
+            let (c_highest, nn) = rawsys.search_c_highest(Some(&axes.index_axis(Axis(0), 2).to_owned()));
             println!("search_c_highest end");
             println!("n{:?}",n);
-            let n = if n == 1 { None } else {
-                let c2x = rawsys.search_c2x(&axes.index_axis(Axis(0), 2).to_owned(), n);
-                let mirrorx = rawsys.search_mirrorx(Some(&axes.index_axis(Axis(0), 2).to_owned()), n);
-                Some((c2x, mirrorx))
-            };
+            n = Some(nn as i32);
+            if n == Some(1) {
+                n = None;
+            }
+            else {
+                
+                let c2x = rawsys.search_c2x(&axes.index_axis(Axis(0), 2).to_owned(), n.unwrap() as usize);
+                println!("c2x{:?}",c2x);
+                let mirrorx = rawsys.search_mirrorx(Some(&axes.index_axis(Axis(0), 2).to_owned()), n.unwrap() as usize);
+                println!("mirrorx{:?}",mirrorx);
+            }
+            println!("n{:?}",n);
+            
         } else {
             let n = -1; 
             
         }
         println!("n{:?}",n);
+        
         if let None = n {
             println!("n is None");
             let (zaxis, n) = rawsys.search_c_highest(None);
@@ -304,9 +317,12 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                 }
             }
         }
-        let n = n.unwrap();
-        if n >= 2 {
-            let gpname = "None";
+        
+
+        
+        if n.unwrap() >= 2 {
+            println!("n >= 2");
+            let mut gpname: String = String::from("");
             let axis_view = axes.index_axis(Axis(1), 2);
 
             let axis_owned = axis_view.to_owned();
@@ -314,22 +330,22 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             let axis_option = Some(&axis_owned);
             if let Some(c2x) = c2x {
                 if rawsys.has_mirror(&axis_option.unwrap()) {
-                    let gpname = format!("D{}h", n);
-                } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n as usize) {
-                    let gpname = format!("D{}d", n);
+                    gpname = format!("D{}h", n.unwrap());
+                } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n.unwrap() as usize) {
+                    gpname = format!("D{}d", n.unwrap());
                 } else {
-                    let gpname = format!("D{}", n);
+                    gpname = format!("D{}", n.unwrap());
                 }
                 let axes = _make_axes(&axis_option.unwrap().view(), &c2x.view());
             } else if let Some(mirrorx) = mirrorx {
-                let gpname = format!("C{}v", n);
+                gpname = format!("C{}v", n.unwrap());
                 let axes = _make_axes(&axis_option.unwrap().view(), &mirrorx.view());
             } else if rawsys.has_mirror(&axis_option.unwrap().clone()) {
-                let gpname = format!("C{}h", n);
-            } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n as usize) {
-                let gpname = format!("S{}", n * 2);
+                gpname = format!("C{}h", n.unwrap());
+            } else if rawsys.has_improper_rotation(&axis_option.unwrap().view(), n.unwrap() as usize) {
+                gpname = format!("S{}", n.unwrap() * 2);
             } else {
-                let gpname = format!("C{}", n);
+                gpname = format!("C{}", n.unwrap());
             }
             return (gpname.to_string(), charge_center, axes);
         }
@@ -887,17 +903,29 @@ impl SymmSys {
         (cmax, nmax as usize)
     }
     fn search_c2x(&self, zaxis: &Array1<f64>,n: usize) -> Option<Array1<f64>> {
+        println!("zaxis: {:?}",zaxis);
+        println!("n: {:?}",n);
         let decimals = (-f64::log10(TOLERANCE)).floor() as usize - 1;
+        println!("decimals: {:?}", decimals);
         let mut maybe_c2x = Vec::new();
         
         for lst in self.group_atoms_by_distance.clone() {
             if lst.len() > 1 {
-                let r0 = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap().select(Axis(0), &lst);
+                println!("lst: {:?}",lst);
+                let r0 = Array2::from_shape_vec((self.atoms.len(), self.atoms[0].len()), self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()).unwrap().select(Axis(0), &lst).slice(s![.., 1..]).to_owned();
                 let zcos = r0.dot(zaxis);
-                let zcos = zcos.map(|x| (x / TOLERANCE).round() * TOLERANCE);
-                let (_, uniq_zcos) = get_unique_and_indices(&zcos);
+                println!("r0.dot(zaxis): {:?}",zcos);
+                fn round_to_decimals(x: &f64, decimals: i32) -> f64 {
+                    let factor = 10f64.powi(decimals);
+                    (x * factor).round() / factor
+                }
+                let zcos = zcos.map(|x| round_to_decimals(x, decimals as i32));
+                println!("zcos: {:?}",zcos);
+                let (uniq_zcos, _) = get_unique_and_indices(&zcos);
+                println!("uniq_zcos: {:?}",uniq_zcos);
                 
                 for d in uniq_zcos {
+                    println!("d: {:?}",d);
                     if d as f64 > TOLERANCE {
                         let mirrord = zcos.mapv(|x| (x - d as f64).abs() < TOLERANCE);
                         
@@ -921,6 +949,7 @@ impl SymmSys {
                             }
                         }
                     } else if (d as f64).abs() < TOLERANCE {
+                        println!("(d as f64).abs() < TOLERANCE");
                         let r1_indices: Vec<usize> = zcos
                             .iter()
                             .enumerate()
@@ -933,6 +962,7 @@ impl SymmSys {
                         let r2 = rotation_mat(&zaxis.view(), 2.0 * std::f64::consts::PI / n as f64).dot(&r1);
                 
                         if (r1.clone() + r2.clone()).sum() > TOLERANCE {
+                            println!("(r1.clone() + r2.clone()).sum() > TOLERANCE");
                             maybe_c2x.push(r1 + r2);
                         } else {
                             maybe_c2x.push(r2 - r1);
@@ -956,6 +986,7 @@ impl SymmSys {
                     let maybe_c2x: Vec<Array1<f64>> = maybe_c2x.outer_iter().map(|row| row.to_owned()).collect();
                     for c2x in maybe_c2x {
                         if !parallel_vectors(&c2x.view(), &zaxis.view(), TOLERANCE) && self.has_rotation(&c2x.view(), 2) {
+                            println!("return Some(c2x);");
                             return Some(c2x);
                         }
                     }
