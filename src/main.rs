@@ -287,11 +287,13 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
         
         if let None = n {
             println!("n is None");
-            let (zaxis, n) = rawsys.search_c_highest(None);
-            if n > 1 {
-                if let Some(c2x) = rawsys.search_c2x(&zaxis, n) {
+            let (zaxis, nn) = rawsys.search_c_highest(None);
+            n = Some(nn as i32);
+            println!("n{:?}",n);
+            if n.unwrap() > 1 {
+                if let Some(c2x) = rawsys.search_c2x(&zaxis, n.unwrap() as usize) {
                     axes = _make_axes(&zaxis.view(), &c2x.view());
-                } else if let Some(mirrorx) = rawsys.search_mirrorx(Some(&zaxis), n) {
+                } else if let Some(mirrorx) = rawsys.search_mirrorx(Some(&zaxis), n.unwrap() as usize) {
                     axes = _make_axes(&zaxis.view(), &mirrorx.view());
                 } else {
 
@@ -318,7 +320,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             }
         }
         
-
+        println!("n{:?}",n);
         
         if n.unwrap() >= 2 {
             println!("n >= 2");
@@ -326,7 +328,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
             let axis_view = axes.index_axis(Axis(1), 2);
 
             let axis_owned = axis_view.to_owned();
-
+            println!("axis[2]{:?}",axis_owned);
             let axis_option = Some(&axis_owned);
             if let Some(c2x) = c2x {
                 if rawsys.has_mirror(&axis_option.unwrap()) {
