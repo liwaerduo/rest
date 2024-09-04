@@ -153,7 +153,7 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
     println!("w1: {:?}, u1: {:?}", w1, u1);
     let mut axes = u1.t().to_owned();
 
-    let charge_center = rawsys.charge_center.clone();
+    let mut charge_center = rawsys.charge_center.clone();
 
     fn allclose(w1: &Array1<f64>, tol: f64) -> bool {
         w1.iter().all(|&x| (x - 0.0).abs() <= tol)
@@ -350,8 +350,58 @@ fn detect_symm(atoms: &Vec<(&String, [f64;3])>, basis: Option<HashMap<String, is
                 gpname = format!("C{}", n.unwrap());
             }
             return (gpname.to_string(), charge_center, axes);
+        } else {
+            let is_c2x = rawsys.has_rotation(&axes.index_axis(Axis(1), 0), 2);
+            let is_c2y = rawsys.has_rotation(&axes.index_axis(Axis(1), 1), 2);
+            let is_c2z = rawsys.has_rotation(&axes.index_axis(Axis(1), 2), 2);
+            
+            let mut gpname: Option<&str> = None;
+            
+            if is_c2z && is_c2x && is_c2y {
+                if rawsys.has_icenter() {
+                    gpname = Some("D2h");
+                    axes = _adjust_planar_d2h(&rawsys.atom_coords().to_owned(), axes.to_owned().clone());
+                } else {
+                    gpname = Some("D2");
+                }
+                axes = alias_axes(&axes, &Array2::<f64>::eye(3));
+            } else if is_c2z || is_c2x || is_c2y {
+                // 旋转轴调整
+                if is_c2x {
+                    axes = axes.select(Axis(0), &[1, 2, 0]);
+                }
+                if is_c2y {
+                    axes = axes.select(Axis(0), &[2, 0, 1]);
+                }
+            
+                if rawsys.has_mirror(&axes.row(2).to_owned()) {
+                    gpname = Some("C2h");
+                } else if rawsys.has_mirror(&axes.row(0).to_owned()) {
+                    gpname = Some("C2v");
+                    axes = _adjust_planar_c2v(&rawsys.atom_coords().to_owned(), axes.to_owned().clone());
+                } else {
+                    gpname = Some("C2");
+                }
+            } else {
+                // 处理没有 C2 对称性情况
+                if rawsys.has_icenter() {
+                    gpname = Some("Ci");
+                } else if rawsys.has_mirror(&axes.row(0).to_owned()) {
+                    gpname = Some("Cs");
+                    axes = axes.select(Axis(0), &[1, 2, 0]);
+                } else if rawsys.has_mirror(&axes.row(1).to_owned()) {
+                    gpname = Some("Cs");
+                    axes = axes.select(Axis(0), &[2, 0, 1]);
+                } else if rawsys.has_mirror(&axes.row(2).to_owned()) {
+                    gpname = Some("Cs");
+                } else {
+                    gpname = Some("C1");
+                    axes = Array2::<f64>::eye(3);
+                    charge_center = Array1::<f64>::zeros(3);
+                }
+            }
+            return (gpname.unwrap().to_string(), charge_center, axes)
         }
-        
 
         
     
@@ -1048,7 +1098,16 @@ impl SymmSys {
         
         self.symmetric_for(SymmetryOp::Matrix(s_op.clone()))
     }
-    
+    fn atom_coords(&self) -> Array2<f64> {
+        
+        let array = Array2::from_shape_vec(
+            (self.atoms.len(), self.atoms[0].len()),
+            self.atoms.clone().into_iter().flatten().collect::<Vec<_>>()
+        ).unwrap();
+        array.slice(s![.., 1..]).to_owned()
+
+        
+    }
 
 }
 enum SymmetryOp {
@@ -1723,4 +1782,155 @@ fn _pseudo_vectors(vs: &mut Array2<f64>) -> Array2<f64> {
     }
 
     vs
+}
+fn _adjust_planar_d2h(atom_coords: &Array2<f64>, mut axes: Array2<f64>) -> Array2<f64> {
+    let natm = atom_coords.nrows(); 
+    let tol = TOLERANCE / (1.0 + (natm as f64)).sqrt();
+
+    let dot_x = atom_coords.dot(&axes.row(0).to_owned());
+    let dot_y = atom_coords.dot(&axes.row(1).to_owned());
+    let dot_z = atom_coords.dot(&axes.row(2).to_owned());
+
+    let natm_with_x = dot_x.iter().filter(|&&x| x.abs() > tol).count();
+    let natm_with_y = dot_y.iter().filter(|&&y| y.abs() > tol).count();
+    let natm_with_z = dot_z.iter().filter(|&&z| z.abs() > tol).count();
+
+    if natm_with_z == 0 {
+        // atoms on xy plane
+        if natm_with_x >= natm_with_y {
+            // rotate xz
+            axes = array![
+                [-axes[[2, 0]], axes[[1, 0]], axes[[0, 0]]],
+                [-axes[[2, 1]], axes[[1, 1]], axes[[0, 1]]],
+                [-axes[[2, 2]], axes[[1, 2]], axes[[0, 2]]],
+            ];
+        } else {
+            // rotate xy then rotate xz
+            axes = array![
+                [axes[[2, 0]], axes[[0, 0]], axes[[1, 0]]],
+                [axes[[2, 1]], axes[[0, 1]], axes[[1, 1]]],
+                [axes[[2, 2]], axes[[0, 2]], axes[[1, 2]]],
+            ];
+        }
+    } else if natm_with_y == 0 {
+        // atoms on xz plane
+        if natm_with_x >= natm_with_z {
+            // rotate xy
+            axes = array![
+                [-axes[[1, 0]], axes[[0, 0]], axes[[2, 0]]],
+                [-axes[[1, 1]], axes[[0, 1]], axes[[2, 1]]],
+                [-axes[[1, 2]], axes[[0, 2]], axes[[2, 2]]],
+            ];
+        } else {
+            // rotate xz then rotate xy
+            axes = array![
+                [axes[[1, 0]], axes[[2, 0]], axes[[0, 0]]],
+                [axes[[1, 1]], axes[[2, 1]], axes[[0, 1]]],
+                [axes[[1, 2]], axes[[2, 2]], axes[[0, 2]]],
+            ];
+        }
+    } else if natm_with_x == 0 {
+        // atoms on yz plane
+        if natm_with_y < natm_with_z {
+            // rotate yz
+            axes = array![
+                [axes[[0, 0]], -axes[[2, 0]], axes[[1, 0]]],
+                [axes[[0, 1]], -axes[[2, 1]], axes[[1, 1]]],
+                [axes[[0, 2]], -axes[[2, 2]], axes[[1, 2]]],
+            ];
+        }
+    }
+
+    axes
+}
+fn closest_axes(axes: &Array2<f64>, reference: &Array2<f64>) -> (usize, usize, usize) {
+    // einsum('ix,jx->ji', axes, ref)
+    let dot_product = axes.dot(reference); 
+
+    let zcomp = dot_product.mapv(f64::abs); 
+    let zmax = zcomp
+    .map_axis(Axis(1), |row| {
+        row.iter().cloned().fold(None, |max, val| match max {
+            Some(m) if val > m => Some(val),
+            _ => max.or(Some(val)),
+        })
+    })
+    .iter()
+    .cloned()
+    .fold(None, |max, val| match max {
+        Some(m) if val > m => Some(val),
+        _ => max.or(Some(val)),
+    })
+    .unwrap();
+    let zmax_idx: Vec<usize> = zcomp
+        .index_axis(Axis(0), 2)
+        .iter()
+        .enumerate()
+        .filter(|(_, &val)| (val - zmax.unwrap()).abs() < TOLERANCE)
+        .map(|(i, _)| i)
+        .collect();
+    let z_id = *zmax_idx.iter().max().unwrap();
+
+    let mut xcomp = dot_product.index_axis(Axis(0), 0).to_owned();
+    let mut ycomp = dot_product.index_axis(Axis(0), 1).to_owned();
+    xcomp[z_id] = 0.0;
+    ycomp[z_id] = 0.0;
+
+    let xmax = xcomp.mapv(f64::abs)
+        .iter()
+        .cloned()
+        .fold(None, |max, val| match max {
+            Some(m) if val > m => Some(val),
+            _ => max.or(Some(val)),
+        })
+        .unwrap_or(0.0);
+    let xmax_idx: Vec<usize> = xcomp
+        .iter()
+        .enumerate()
+        .filter(|(_, &val)| (val.abs() - xmax).abs() < TOLERANCE)
+        .map(|(i, _)| i)
+        .collect();
+    let x_id = *xmax_idx.iter().max().unwrap();
+
+    ycomp[x_id] = 0.0;
+
+    let y_id = ycomp
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap())
+        .map(|(i, _)| i)
+        .unwrap();
+
+    (x_id, y_id, z_id)
+}
+fn alias_axes(axes: &Array2<f64>, reference: &Array2<f64>) -> Array2<f64> {
+    let (x_id, y_id, z_id) = closest_axes(axes, reference);
+
+    let mut new_axes = axes.select(Axis(0), &[x_id, y_id, z_id]);
+    
+    if new_axes.det().unwrap() < 0.0 {
+        new_axes = axes.select(Axis(0), &[y_id, x_id, z_id]);
+    }
+
+    new_axes
+}
+fn _adjust_planar_c2v(atom_coords: &Array2<f64>, mut axes: Array2<f64>) -> Array2<f64> {
+
+    let natm = atom_coords.shape()[0];
+    
+    let tol = TOLERANCE / (1.0 + natm as f64).sqrt();
+
+    let atoms_on_xz = atom_coords.dot(&axes.index_axis(Axis(0), 1).to_owned())
+        .mapv(f64::abs)
+        .mapv(|v| v < tol);
+
+    if atoms_on_xz.iter().all(|&on_xz| on_xz) {
+        axes = array![
+            [-axes[(1, 0)], -axes[(1, 1)], -axes[(1, 2)]],  // -axes[1]
+            [axes[(0, 0)], axes[(0, 1)], axes[(0, 2)]],     // axes[0]
+            [axes[(2, 0)], axes[(2, 1)], axes[(2, 2)]]      // axes[2]
+        ];
+    }
+    
+    axes
 }
